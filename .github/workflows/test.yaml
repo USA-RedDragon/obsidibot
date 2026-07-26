@@ -1,0 +1,129 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.ref }}'
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  backend-benchmark-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+
+      - run: CGO_ENABLED=0 go test -run ^$ -benchmem -bench=. ./...
+
+  backend-race-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+
+      - name: Race tests
+        run: |
+          go test ./... -race
+
+  backend-unit-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+
+      - name: Unit tests
+        run: |
+          go install github.com/jstemmer/go-junit-report/v2@latest
+          go install github.com/vakenbolt/go-test-report@latest
+          env CGO_ENABLED=0 go test -v ./... > out.txt 2>&1 || true
+          env CGO_ENABLED=0 go test -v ./... -json > json-out.txt || true
+          cat out.txt | go-junit-report -out report.xml -iocopy
+          cat json-out.txt | go-test-report -o report.html
+
+      - name: Publish Test Report
+        if: always()
+        uses: mikepenz/action-junit-report@v4
+        with:
+          report_paths: "report.xml"
+          require_tests: true
+          check_retries: true
+          detailed_summary: true
+          fail_on_failure: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          check_name: Backend Unit Tests
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-report-xml
+          path: report.xml
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-report-html
+          path: report.html
+          if-no-files-found: error
+          retention-days: 30
+
+  backend-unit-tests-coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      checks: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+
+      - name: Unit tests
+        run: |
+          env CGO_ENABLED=0 go test -v ./... -coverprofile coverage.out -coverpkg=./... -covermode atomic
+
+      - name: Report coverage
+        if: always()
+        uses: USA-RedDragon/reusable-actions/coverage@v2
+        with:
+          file: coverage.out
