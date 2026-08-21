@@ -24,8 +24,8 @@ internal/ingest/server.go	65	56
 internal/interactions/interactions.go	145	126
 internal/interactions/register.go	22	19
 internal/kills/applier.go	86	67
-internal/kills/feed.go	138	100
-internal/leader/leader.go	46	43
+internal/kills/feed.go	138	94
+internal/leader/leader.go	46	44
 internal/metrics/collector.go	97	88
 internal/metrics/expose.go	129	129
 internal/metrics/goruntime.go	27	22
