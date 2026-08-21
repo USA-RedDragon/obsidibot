@@ -22,6 +22,14 @@ type fakePoster struct {
 	// tested against an outage.
 	failUntil int
 	attempts  int
+	// err, when set, makes every send fail with it.
+	err error
+}
+
+func (f *fakePoster) attemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
 }
 
 func (f *fakePoster) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend,
@@ -30,6 +38,9 @@ func (f *fakePoster) ChannelMessageSendComplex(_ string, data *discordgo.Message
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++
+	if f.err != nil {
+		return nil, f.err
+	}
 	if f.attempts <= f.failUntil {
 		return nil, errors.New("discord is having a moment")
 	}
@@ -286,5 +297,82 @@ func TestFeedEscapesHostileNames(t *testing.T) {
 		if strings.Contains(description, "||gotcha||") {
 			t.Errorf("unescaped spoiler markup reached the feed: %q", description)
 		}
+	}
+}
+
+// TestPermissionFailureIsNotHammered. A missing channel permission cannot be
+// fixed by retrying, so the feed must back off for minutes rather than issuing
+// roughly one doomed request per second forever — which is what it did in
+// production: 100 identical 403s in two minutes, burning Discord API quota and
+// burying every other log line.
+//
+// The queue is durable, so waiting costs nothing: the backlog drains the moment
+// somebody grants the permission.
+func TestPermissionFailureIsNotHammered(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+
+	poster := &fakePoster{err: &discordgo.RESTError{
+		Message: &discordgo.APIErrorMessage{
+			Code: discordgo.ErrCodeMissingPermissions, Message: "Missing Permissions",
+		},
+	}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	feed := kills.NewFeed(h.store, poster, metrics.New(), h.cfg, "g1")
+	done := make(chan error, 1)
+	go func() { done <- feed.Run(ctx) }()
+
+	// Long enough that the one-second transient backoff would have produced
+	// several attempts.
+	time.Sleep(3 * time.Second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+
+	if got := poster.attemptCount(); got > 1 {
+		t.Errorf("a permanent permission failure was retried %d times in 3s; "+
+			"it must back off instead of hammering Discord", got)
+	}
+
+	// And nothing was dropped: the event is still queued for when it is fixed.
+	unposted, err := h.store.Queries().CountUnpostedEvents(context.Background())
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if unposted != 1 {
+		t.Fatalf("%d events queued after a blocked post, want 1 — the feed must stay lossless", unposted)
+	}
+}
+
+// TestTransientFailureIsRetriedPromptly is the other half: a rate limit or a
+// 5xx must NOT get the long backoff, or the feed stalls for minutes over a
+// hiccup.
+func TestTransientFailureIsRetriedPromptly(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+
+	poster := &fakePoster{err: errors.New("HTTP 502 Bad Gateway")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	feed := kills.NewFeed(h.store, poster, metrics.New(), h.cfg, "g1")
+	done := make(chan error, 1)
+	go func() { done <- feed.Run(ctx) }()
+	time.Sleep(2500 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+
+	if got := poster.attemptCount(); got < 2 {
+		t.Errorf("a transient failure was retried only %d times in 2.5s; "+
+			"it should retry on the short backoff", got)
 	}
 }

@@ -34,6 +34,15 @@ const feedBatch = 50
 // only stops a hard failure becoming a spin loop.
 const errorBackoff = time.Second
 
+// blockedBackoff is the wait after an error that RETRYING CANNOT FIX.
+//
+// A missing permission or a deleted channel needs a human. Retrying it on the
+// transient schedule means roughly one doomed request per second, forever:
+// pointless load on Discord's API, a log line per second burying everything
+// else, and no closer to working. Waiting minutes costs nothing, because the
+// queue is durable and drains the moment somebody fixes the channel.
+const blockedBackoff = 5 * time.Minute
+
 // Embed colours, chosen so a PvP kill and a death by the world are
 // distinguishable at a glance in a busy channel.
 const (
@@ -72,9 +81,22 @@ func (f *Feed) Run(ctx context.Context) error {
 			}
 			// A Discord failure must not end the job -- the backlog is
 			// deliberately durable, so waiting and retrying is the correct
-			// response and the gauge shows how far behind it is.
-			slog.ErrorContext(ctx, "kill feed pass failed, will retry", "error", err)
-			if !sleep(ctx, errorBackoff) {
+			// response and the gauge shows how far behind it is. But WHAT to
+			// wait depends on whether retrying could ever help.
+			backoff := errorBackoff
+			if blocked, why := blockedFromPosting(err); blocked {
+				backoff = blockedBackoff
+				// Logged once per blockedBackoff rather than once per second,
+				// and phrased so the fix is in the message: whoever reads this
+				// needs to change a channel permission, not restart anything.
+				slog.ErrorContext(ctx, "cannot post to the kill feed channel; "+
+					"grant obsidibot View Channel, Send Messages and Embed Links there. "+
+					"Kills are still being recorded and will post once it can",
+					"reason", why, "retryIn", backoff, "error", err)
+			} else {
+				slog.ErrorContext(ctx, "kill feed pass failed, will retry", "error", err)
+			}
+			if !sleep(ctx, backoff) {
 				return nil
 			}
 			continue
@@ -236,5 +258,29 @@ func sleep(ctx context.Context, d time.Duration) bool {
 		return false
 	case <-time.After(d):
 		return true
+	}
+}
+
+// blockedFromPosting reports whether an error means the bot cannot post to the
+// configured channel at all, as opposed to a failure worth retrying promptly.
+//
+// These are the states a human has to resolve: the channel denies the bot
+// Send Messages or Embed Links, the bot cannot see it, or it has been deleted.
+// Everything else -- rate limits, 5xx, a dropped connection -- is transient and
+// gets the short backoff.
+func blockedFromPosting(err error) (bool, string) {
+	var rest *discordgo.RESTError
+	if !errors.As(err, &rest) || rest.Message == nil {
+		return false, ""
+	}
+	switch rest.Message.Code {
+	case discordgo.ErrCodeMissingPermissions:
+		return true, "missing Send Messages or Embed Links in the channel"
+	case discordgo.ErrCodeMissingAccess:
+		return true, "the bot cannot see the channel"
+	case discordgo.ErrCodeUnknownChannel:
+		return true, "the channel no longer exists; set a new one with /config kill-channel"
+	default:
+		return false, ""
 	}
 }
