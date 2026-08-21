@@ -1,0 +1,290 @@
+package kills_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
+	"github.com/USA-RedDragon/obsidibot/internal/kills"
+	"github.com/USA-RedDragon/obsidibot/internal/metrics"
+	"github.com/bwmarrin/discordgo"
+)
+
+// fakePoster records what the feed would have sent to Discord.
+type fakePoster struct {
+	mu    sync.Mutex
+	sends []*discordgo.MessageSend
+	// failUntil makes the first N sends fail, so the lossless promise can be
+	// tested against an outage.
+	failUntil int
+	attempts  int
+}
+
+func (f *fakePoster) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend,
+	_ ...discordgo.RequestOption,
+) (*discordgo.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	if f.attempts <= f.failUntil {
+		return nil, errors.New("discord is having a moment")
+	}
+	f.sends = append(f.sends, data)
+	return &discordgo.Message{ID: "m1"}, nil
+}
+
+func (f *fakePoster) descriptions() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.sends))
+	for _, send := range f.sends {
+		if len(send.Embeds) > 0 {
+			out = append(out, send.Embeds[0].Description)
+		}
+	}
+	return out
+}
+
+// feedChannel is where the tests point the kill feed.
+const feedChannel = "channel-1"
+
+func (h *harness) setKillChannel(t *testing.T) {
+	t.Helper()
+	channelID := feedChannel
+	if err := h.store.Queries().SetKillFeedChannel(context.Background(), gen.SetKillFeedChannelParams{
+		GuildID: "g1", KillFeedChannelID: &channelID,
+	}); err != nil {
+		t.Fatalf("set kill channel: %v", err)
+	}
+}
+
+// runFeed drains the feed once and stops.
+func (h *harness) runFeed(t *testing.T, poster kills.Poster) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	feed := kills.NewFeed(h.store, poster, metrics.New(), h.cfg, "g1")
+	done := make(chan error, 1)
+	go func() { done <- feed.Run(ctx) }()
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := h.store.Queries().CountUnpostedEvents(ctx)
+		if err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+}
+
+// TestFeedPostsInOrder: the feed is a narrative, so it has to read in the order
+// things happened.
+func TestFeedPostsInOrder(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.enqueue(t, bob, carol, "DT_ATTACK", false)
+	h.enqueue(t, "", alice, "DT_THIRST", false)
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	got := poster.descriptions()
+	if len(got) != 3 {
+		t.Fatalf("%d messages posted, want 3", len(got))
+	}
+	if !strings.Contains(got[0], "player-"+alice) || !strings.Contains(got[0], "player-"+bob) {
+		t.Errorf("first message: %q", got[0])
+	}
+	if !strings.Contains(got[2], "died of thirst") {
+		t.Errorf("environmental death rendered as %q", got[2])
+	}
+}
+
+// TestFeedNeverPublishesAPosition is the end-to-end form of the rule. The
+// payload carries coordinates and POI; neither may reach a channel with the
+// default configuration.
+func TestFeedNeverPublishesAPosition(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+
+	ctx := context.Background()
+	poi := "Talons Point"
+	if _, err := h.store.Queries().InsertKillEvent(ctx, gen.InsertKillEventParams{
+		DedupeKey:  []byte("position-test-key-padding-32byte"),
+		ServerGuid: "guid",
+		Payload:    []byte(`{"VictimLocation":"(X=328866.125,Y=-130023.359375,Z=853.25)"}`),
+		VictimAgid: bob, VictimName: "player-" + bob, VictimPoi: &poi,
+		DamageType: "DT_THIRST", Credited: false, CountsDeath: true,
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	poster.mu.Lock()
+	defer poster.mu.Unlock()
+	for _, send := range poster.sends {
+		for _, embed := range send.Embeds {
+			rendered := embed.Description
+			for _, field := range embed.Fields {
+				rendered += " " + field.Name + " " + field.Value
+			}
+			for _, forbidden := range []string{"X=", "Y=", "328866", "Talons Point"} {
+				if strings.Contains(rendered, forbidden) {
+					t.Errorf("the kill feed published %q: %s", forbidden, rendered)
+				}
+			}
+		}
+	}
+}
+
+// TestFeedShowsPOIWhenConfigured is the other half: the flag has to actually do
+// something, or it is a comment pretending to be a setting.
+func TestFeedShowsPOIWhenConfigured(t *testing.T) {
+	h := newHarness(t)
+	h.cfg.KillFeed.ShowPOI = true
+	h.setKillChannel(t)
+
+	ctx := context.Background()
+	poi := "Talons Point"
+	if _, err := h.store.Queries().InsertKillEvent(ctx, gen.InsertKillEventParams{
+		DedupeKey:  []byte("poi-shown-test-key-padding-32byt"),
+		ServerGuid: "guid",
+		Payload:    []byte(`{}`),
+		VictimAgid: bob, VictimName: "player-" + bob, VictimPoi: &poi,
+		DamageType: "DT_THIRST", Credited: false, CountsDeath: true,
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	poster.mu.Lock()
+	defer poster.mu.Unlock()
+	var found bool
+	for _, send := range poster.sends {
+		for _, embed := range send.Embeds {
+			for _, field := range embed.Fields {
+				if strings.Contains(field.Value, "Talons Point") {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("killfeed.showPOI was on but no POI was rendered")
+	}
+}
+
+// TestFeedIsLossless: a Discord outage must delay the feed, not drop it. This
+// is the property that justifies the unbounded backlog and its gauge.
+func TestFeedIsLossless(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.enqueue(t, bob, carol, "DT_ATTACK", false)
+
+	// Every send fails for a while, then recovers.
+	poster := &fakePoster{failUntil: 3}
+	h.runFeed(t, poster)
+
+	if len(poster.descriptions()) != 2 {
+		t.Fatalf("%d messages survived the outage, want 2", len(poster.descriptions()))
+	}
+	n, err := h.store.Queries().CountUnpostedEvents(context.Background())
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("%d events still unposted after recovery", n)
+	}
+}
+
+// TestFeedNeverPings: the feed names players constantly, and notifying them
+// every time they die would make the channel unusable.
+func TestFeedNeverPings(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	poster.mu.Lock()
+	defer poster.mu.Unlock()
+	for _, send := range poster.sends {
+		if send.AllowedMentions == nil || len(send.AllowedMentions.Parse) != 0 {
+			t.Fatal("a feed message could ping the players it names")
+		}
+	}
+}
+
+// TestFeedSkipsWhenNoChannelIsSet. Holding a backlog until a moderator sets a
+// channel would mean dumping a month of history the moment they do, which is
+// worse than starting the feed from that point.
+func TestFeedSkipsWhenNoChannelIsSet(t *testing.T) {
+	h := newHarness(t)
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	if len(poster.descriptions()) != 0 {
+		t.Fatal("a message was posted with no channel configured")
+	}
+	n, err := h.store.Queries().CountUnpostedEvents(context.Background())
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("%d events are queued waiting for a channel to be configured", n)
+	}
+}
+
+// TestFeedEscapesHostileNames: names come from the game, so a player can name
+// themselves markdown.
+func TestFeedEscapesHostileNames(t *testing.T) {
+	h := newHarness(t)
+	h.setKillChannel(t)
+
+	ctx := context.Background()
+	killer := "111-111-111"
+	hostile := "**@everyone** ||gotcha||"
+	if _, err := h.store.Queries().InsertKillEvent(ctx, gen.InsertKillEventParams{
+		DedupeKey:  []byte("hostile-name-key-padding-32bytes"),
+		ServerGuid: "guid",
+		Payload:    []byte(`{}`),
+		VictimAgid: bob, VictimName: hostile,
+		KillerAgid: &killer, KillerName: &hostile,
+		DamageType: "DT_ATTACK", Credited: true, CountsDeath: true,
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	poster := &fakePoster{}
+	h.runFeed(t, poster)
+
+	for _, description := range poster.descriptions() {
+		if strings.Contains(description, "@everyone") {
+			t.Errorf("an unescaped @everyone reached the feed: %q", description)
+		}
+		if strings.Contains(description, "||gotcha||") {
+			t.Errorf("unescaped spoiler markup reached the feed: %q", description)
+		}
+	}
+}

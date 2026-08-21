@@ -20,3 +20,23 @@ jobs:
           version: v2.9.0
           skip-cache: true
           only-new-issues: true
+
+  sqlc-drift:
+    name: sqlc drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # sqlc-generated code is committed under internal/db/gen; regenerating
+      # from schema/migrations must be a no-op or the check fails. The
+      # `git add -N` registers brand-new (untracked) generated files as
+      # intent-to-add so the diff catches them too, not just edits to
+      # already-tracked files.
+      - name: Check sqlc generated code for drift
+        run: |
+          go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+          git add -N internal/db/gen
+          git diff --exit-code -- internal/db/gen

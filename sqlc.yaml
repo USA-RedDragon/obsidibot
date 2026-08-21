@@ -1,0 +1,29 @@
+# Models are generated straight from schema/migrations, so a migration that
+# changes the shape of a table fails regeneration rather than production.
+# Generated code is committed; CI checks that regenerating is a no-op.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: schema/migrations
+    queries: internal/db/queries
+    gen:
+      go:
+        package: gen
+        out: internal/db/gen
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        overrides:
+          - db_type: pg_catalog.timestamptz
+            go_type: time.Time
+          - db_type: pg_catalog.timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
