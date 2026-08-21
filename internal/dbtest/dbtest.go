@@ -19,9 +19,11 @@ package dbtest
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -67,15 +69,9 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, cfg.ConnString())
-	if err != nil {
-		t.Fatalf("open test pool: %v", err)
-	}
-	pool.Config().ConnConfig.RuntimeParams["search_path"] = schema
-
-	// Reopen from the mutated config: ConnString() does not carry RuntimeParams.
-	pool.Close()
-	pool, err = pgxpool.NewWithConfig(ctx, cfg)
+	// NewWithConfig, not New(ConnString()): ConnString does not carry
+	// RuntimeParams, so the search_path set above would be lost.
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open test pool: %v", err)
 	}
@@ -89,6 +85,24 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+// MigrationsFS returns the shipped migrations, found relative to this file.
+//
+// Seven test files had a byte-identical copy of this, which is exactly the
+// drift this package's doc comment says it exists to prevent. Resolving the
+// path from HERE also makes it independent of how deep the caller sits.
+func MigrationsFS(t *testing.T) fs.FS {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate the dbtest source file")
+	}
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("migrations directory %s: %v", dir, err)
+	}
+	return os.DirFS(dir)
 }
 
 // Reset empties this package's schema so each test starts from nothing.

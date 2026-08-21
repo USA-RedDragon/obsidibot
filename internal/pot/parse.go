@@ -44,7 +44,7 @@ var ErrCommandRejected = errors.New("pot: the server rejected the command")
 // CheckRejected reports ErrCommandRejected if raw is the server refusing the
 // command. Every command this package sends passes through it.
 func CheckRejected(verb, raw string) error {
-	if rejectedRE.MatchString(raw) {
+	if rejected(raw) {
 		return fmt.Errorf("%w: %s: %s", ErrCommandRejected, verb, strings.TrimSpace(firstLine(raw)))
 	}
 	return nil
@@ -91,21 +91,36 @@ var (
 			`Marks:\s*(?P<marks>-?[\d.]+)\s*/\s*` +
 			`Growth:\s*(?P<growth>-?[\d.]+)\s*/\s*` +
 			`Location:\s*\(\s*X=-?[\d.]+\s+Y=-?[\d.]+\s+Z=-?[\d.]+\s*\)`)
+)
 
-	// The server's refusal, seen live as:
+// The server's refusals, all matched as plain substrings rather than patterns.
+//
+// These are literals, and a regexp alternation over literals defeats Go's
+// literal-prefix fast path: the two guards below ran on EVERY RCON reply and
+// cost 2714ns against 19ns for strings.Contains -- 141x, for no expressiveness.
+const (
 	//   (PlayerInfo 000-000-000): No player with the username '000-000-000'.
-	notOnlineRE = regexp.MustCompile(`No player with the username`)
+	markerNotOnline = "No player with the username"
 
 	// The server reports a command it could not run IN THE RESPONSE BODY, not
-	// as a protocol error, seen live as:
+	// as a protocol error:
 	//   (AddMarks 000-000-000): Incorrect Syntax, type /help.
 	//   (NotARealCommand foo): That command does not exist.
 	//
 	// These MUST be detected. A caller that treated them as success would, for
 	// a withdraw, debit a player's bank and pay out nothing -- and the day
 	// Alderon renames AddMarks, it would do that to everyone at once.
-	rejectedRE = regexp.MustCompile(`That command does not exist|Incorrect Syntax`)
+	markerNoSuchCommand = "That command does not exist"
+	markerBadSyntax     = "Incorrect Syntax"
 )
+
+// notOnline reports whether a response says the player is not connected.
+func notOnline(raw string) bool { return strings.Contains(raw, markerNotOnline) }
+
+// rejected reports whether the server refused the command itself.
+func rejected(raw string) bool {
+	return strings.Contains(raw, markerNoSuchCommand) || strings.Contains(raw, markerBadSyntax)
+}
 
 // MarksResult is what AddMarks or RemoveMarks reported.
 //
@@ -143,7 +158,7 @@ func ParseMarksResult(raw string) (MarksResult, error) {
 	if err := CheckRejected("marks", raw); err != nil {
 		return MarksResult{}, err
 	}
-	if notOnlineRE.MatchString(raw) {
+	if notOnline(raw) {
 		return MarksResult{}, ErrPlayerNotOnline
 	}
 
@@ -173,7 +188,7 @@ func ParsePlayerInfo(raw string) (Player, error) {
 	if err := CheckRejected("PlayerInfo", raw); err != nil {
 		return Player{}, err
 	}
-	if notOnlineRE.MatchString(raw) {
+	if notOnline(raw) {
 		return Player{}, ErrPlayerNotOnline
 	}
 
@@ -192,44 +207,6 @@ func ParsePlayerInfo(raw string) (Player, error) {
 	// parser look like a quiet server.
 	return Player{}, fmt.Errorf("%w: no player record in the response", ErrUnparseable)
 }
-
-// ParsePlayerInfoAll reads the response to PlayerInfoAll.
-//
-// reportedTotal is the server's own count, or NoReportedTotal when the response
-// carried no header. Compared against len(players) it is the integrity check
-// that catches a truncated response or a changed format, which would otherwise
-// read as a quiet server.
-func ParsePlayerInfoAll(raw string) (players []Player, reportedTotal int, parseFailures int) {
-	reportedTotal = NoReportedTotal
-
-	for line := range strings.SplitSeq(raw, "\n") {
-		line = strings.TrimRight(line, "\r")
-
-		if reportedTotal == NoReportedTotal {
-			if match := totalRE.FindStringSubmatch(line); match != nil {
-				if total, err := strconv.Atoi(match[1]); err == nil {
-					reportedTotal = total
-				}
-			}
-		}
-
-		player, ok := parsePlayer(line)
-		switch {
-		case ok:
-			players = append(players, player)
-		case strings.Contains(line, agidMarker):
-			parseFailures++
-		}
-	}
-	return players, reportedTotal, parseFailures
-}
-
-// NoReportedTotal is used when a response carried no "Total Players" header, so
-// that "the server did not say" stays distinguishable from "the server said 0".
-const NoReportedTotal = -1
-
-//nolint:gochecknoglobals // compiled once and never reassigned
-var totalRE = regexp.MustCompile(`Total Players:\s*(\d+)`)
 
 // parsePlayer extracts one record, reporting whether the line held one.
 func parsePlayer(line string) (Player, bool) {

@@ -154,17 +154,29 @@ func (s *Server) record(ctx context.Context, body []byte, event PlayerKilled) er
 		ServerGuid: event.ServerGUID,
 		Payload:    body,
 
-		VictimAgid:   event.VictimID(),
-		VictimName:   event.VictimName,
-		VictimDino:   nullable(event.VictimDinosaurType),
-		VictimGrowth: &event.VictimGrowth,
-		VictimPoi:    nullable(event.VictimPOI),
+		VictimAgid:      event.VictimID(),
+		VictimName:      event.VictimName,
+		VictimDino:      nullable(event.VictimDinosaurType),
+		VictimGrowth:    &event.VictimGrowth,
+		VictimPoi:       nullable(event.VictimPOI),
+		VictimCharacter: nullable(event.VictimCharacterName),
+		VictimRole:      nullable(event.VictimRole),
+		VictimLocation:  nullable(event.VictimLocation),
+		VictimIsAdmin:   event.VictimIsAdmin,
 
-		KillerAgid:    nullable(event.KillerID()),
-		KillerName:    nullable(event.KillerName),
-		KillerDino:    nullable(event.KillerDinosaurType),
-		KillerGrowth:  nullableFloat(event.KillerID(), event.KillerGrowth),
-		KillerIsAdmin: event.KillerIsAdmin,
+		KillerAgid:      nullable(event.KillerID()),
+		KillerName:      nullable(event.KillerName),
+		KillerDino:      nullable(event.KillerDinosaurType),
+		KillerGrowth:    nullableFloat(event.KillerID(), event.KillerGrowth),
+		KillerIsAdmin:   event.KillerIsAdmin,
+		KillerCharacter: nullable(event.KillerCharacterName),
+		KillerRole:      nullable(event.KillerRole),
+		KillerLocation:  nullable(event.KillerLocation),
+
+		// The game reports -1 for "not applicable" when there was no killer,
+		// which must not reach a display as "-1 m".
+		KillDistance: positive(event.KillDistance),
+		TimeOfDay:    nullableInt(event.TimeOfDay),
 
 		DamageType: event.DamageType,
 		// Both decided here because both are pure functions of the payload, so
@@ -202,8 +214,25 @@ func nullable(v string) *string {
 // nullableFloat keeps a killer's growth NULL when there is no killer, rather
 // than storing the zero the payload carries for an environmental death.
 func nullableFloat(killerID string, v float64) *float64 {
-	if killerID == "" {
+	if killerID == "" || v < 0 {
 		return nil
 	}
 	return &v
+}
+
+// positive drops the game's -1 "not applicable" sentinel.
+func positive(v float64) *float64 {
+	if v < 0 {
+		return nil
+	}
+	return &v
+}
+
+// nullableInt drops a zero/negative in-world clock rather than rendering it.
+func nullableInt(v int) *int32 {
+	if v <= 0 {
+		return nil
+	}
+	out := int32(v) //nolint:gosec // the game's clock is 0..2359
+	return &out
 }

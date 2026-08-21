@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"testing"
 
 	"github.com/USA-RedDragon/obsidibot/internal/db"
@@ -19,15 +20,23 @@ const testAGID = "555-000-101"
 // database must do nothing rather than fail on an existing table.
 func TestMigrateIsIdempotent(t *testing.T) {
 	pool, _ := migrated(t)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("second migrate: %v", err)
+	}
+	// Counted from the directory rather than hardcoded: a literal here goes
+	// stale the moment a migration is added, and the property under test is
+	// "each file applied exactly once", not "there is one file".
+	files, err := fs.Glob(dbtest.MigrationsFS(t), "*.sql")
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
 	}
 	var applied int
 	if err := pool.QueryRow(context.Background(), "select count(*) from schema_migrations").Scan(&applied); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("ledger has %d rows after two migrations, want 1", applied)
+	if applied != len(files) {
+		t.Fatalf("ledger has %d rows after two migrate runs over %d files, want %d",
+			applied, len(files), len(files))
 	}
 }
 
@@ -37,7 +46,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 func TestMigrateIsSafeConcurrently(t *testing.T) {
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	migrations := migrationsFS(t)
+	migrations := dbtest.MigrationsFS(t)
 
 	const replicas = 4
 	errs := make(chan error, replicas)
@@ -95,9 +104,23 @@ func TestOneOperationInFlight(t *testing.T) {
 	}
 
 	// Resolving the first must free the slot: the guard is "one at a time",
-	// not "one ever".
-	if err := q.CompleteOperation(ctx, gen.CompleteOperationParams{ID: first.ID}); err != nil {
+	// not "one ever". CompleteOperation only moves a row out of in_flight --
+	// the state guard is what stops two paths settling the same transfer -- so
+	// the row is claimed first, exactly as the transfer path claims it before
+	// issuing the command.
+	claimed, err := q.MarkOperationInFlight(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("claim first: %v", err)
+	}
+	if claimed != 1 {
+		t.Fatalf("claiming a pending row updated %d rows, want 1", claimed)
+	}
+	completed, err := q.CompleteOperation(ctx, gen.CompleteOperationParams{ID: first.ID})
+	if err != nil {
 		t.Fatalf("complete first: %v", err)
+	}
+	if completed != 1 {
+		t.Fatalf("completing an in-flight row updated %d rows, want 1", completed)
 	}
 	if _, err := q.BeginOperation(ctx, gen.BeginOperationParams{
 		AlderonID: testAGID, DiscordUserID: "1",

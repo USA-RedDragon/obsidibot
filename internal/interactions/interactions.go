@@ -31,6 +31,9 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
@@ -52,7 +55,25 @@ const deferredBudget = time.Minute
 // shutdownGrace lets in-flight interactions finish before the listener closes.
 // It clears deferredBudget deliberately: cutting a banking command off midway
 // is exactly the situation the ledger exists to avoid, so shutdown waits.
+//
+// It bounds TWO waits in sequence, and the second is the one that matters.
+// http.Server's Shutdown only drains ACTIVE requests, and a deferred command's
+// request ended the moment its ACK was written -- so the goroutine still doing
+// the work is invisible to it, and Shutdown returns straight away. Serve
+// therefore waits on the router's own tracking afterwards, before the caller
+// closes the database underneath commands that are mid-transfer.
+//
+// Each wait gets the whole grace rather than sharing one deadline, so the
+// theoretical worst case is twice this. That is deliberate rather than
+// overlooked: the first wait is over in milliseconds whenever the deferred path
+// is what is holding things up, and the supervisor's own kill timer is the real
+// ceiling either way.
 const shutdownGrace = deferredBudget + 10*time.Second
+
+// genericFailure is what a caller sees when a command could not be completed.
+// It says nothing about why: the reason is in the log, and a stack trace or a
+// database error is not something to render into a Discord channel.
+const genericFailure = "Something went wrong. This has been logged."
 
 // Context is what a command handler is given: the interaction itself, plus the
 // pieces every handler needs and none of them should reach for globally.
@@ -78,8 +99,8 @@ type Reply struct {
 	// visibility by the time a handler finishes, which is why Command.Ephemeral
 	// rather than this field decides it for deferred commands.
 	Ephemeral bool
-	// UserError marks a refusal the caller caused and can fix. It selects the
-	// metric label, so "you are not linked" does not read as a system fault on
+	// UserError marks a refusal the caller caused and can fix, and selects the
+	// metric label so "you are not linked" does not read as a system fault on
 	// a dashboard.
 	UserError bool
 }
@@ -121,6 +142,11 @@ type Router struct {
 	editor    Editor
 	metrics   *metrics.Metrics
 	commands  map[string]Command
+	// deferred counts the background goroutines started by deferAndRun. They
+	// outlive the request that started them -- that is the whole point of a
+	// deferred reply -- so something has to know they exist, or shutdown will
+	// pull the database out from under a transfer that has already moved marks.
+	deferred sync.WaitGroup
 }
 
 // NewRouter builds a Router. publicKeyHex is the application's Ed25519 public
@@ -146,12 +172,20 @@ func NewRouter(publicKeyHex string, editor Editor, m *metrics.Metrics, commands 
 	return &Router{publicKey: key, editor: editor, metrics: m, commands: byName}, nil
 }
 
-// Commands returns the definitions to register, in a stable order.
+// Commands returns the definitions to register, sorted by name.
+//
+// The sort is not required by Discord -- the registration is a bulk overwrite --
+// but ranging a map gave a different order every boot, which made the
+// "registered slash commands" log line reshuffle for no reason and any diff of
+// two boots meaningless.
 func (r *Router) Commands() []*discordgo.ApplicationCommand {
 	defs := make([]*discordgo.ApplicationCommand, 0, len(r.commands))
 	for _, cmd := range r.commands {
 		defs = append(defs, cmd.Definition)
 	}
+	slices.SortFunc(defs, func(a, b *discordgo.ApplicationCommand) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 	return defs
 }
 
@@ -177,7 +211,49 @@ func (r *Router) Serve(ctx context.Context, bind string, port int, ready func(co
 		IdleTimeout:  60 * time.Second,
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
-	return server.Serve(ctx, "interactions", srv, bind, port, shutdownGrace)
+	err := server.Serve(ctx, "interactions", srv, bind, port, shutdownGrace)
+
+	// Shutdown has drained the ACTIVE requests, which does NOT include a
+	// deferred command: its request finished when the ACK was written and its
+	// work is on a goroutine no http.Server knows about. Waiting here is what
+	// makes this function's return mean "nothing of mine is still running", and
+	// the caller relies on that before closing the database.
+	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
+	defer cancel()
+	if waitErr := r.Wait(waitCtx); waitErr != nil {
+		// The serve error, if there is one, says why we are shutting down at
+		// all, so it wins; this one is still worth saying out loud because it
+		// means work was abandoned mid-flight and may need reconciling.
+		slog.ErrorContext(waitCtx, "deferred commands were still running at shutdown", "error", waitErr)
+		if err == nil {
+			err = waitErr
+		}
+	}
+	return err
+}
+
+// Wait blocks until every deferred command this router started has finished, or
+// ctx expires.
+//
+// It is separate from Serve so the ordering is explicit at the call site: the
+// listener stops accepting, the open requests drain, the deferred work lands,
+// and only then may the database it writes through be closed.
+func (r *Router) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	// WaitGroup.Wait cannot be given a deadline, so it is watched from a
+	// goroutine. On the timeout path that goroutine stays parked until the
+	// commands eventually finish, which is fine: this is only ever called on
+	// the way out, and the alternative is blocking shutdown indefinitely.
+	go func() {
+		r.deferred.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("interactions: waiting for deferred commands: %w", ctx.Err())
+	}
 }
 
 // Handler returns the routes this listener answers. Serve wraps it in a
@@ -295,7 +371,7 @@ func (r *Router) handleCommand(w http.ResponseWriter, req *http.Request, ic *dis
 		slog.ErrorContext(req.Context(), "command failed", "command", data.Name, "error", err)
 		reply = Reply{Content: reply.Content, Ephemeral: true}
 		if reply.Content == "" {
-			reply.Content = "Something went wrong. This has been logged."
+			reply.Content = genericFailure
 		}
 	}
 	r.observe(data.Name, err == nil && !reply.UserError, time.Since(start))
@@ -322,25 +398,47 @@ func (r *Router) deferAndRun(w http.ResponseWriter, req *http.Request, cmd Comma
 	// the request -- only its own deadline.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(req.Context()), deferredBudget)
 
+	// Counted BEFORE the goroutine starts, so a shutdown that begins in the
+	// window between the ACK and the goroutine being scheduled still waits for
+	// it. See Wait.
+	r.deferred.Add(1)
 	go func() {
+		defer r.deferred.Done()
 		defer cancel()
+		// Declared before the recover below so the panic path can report how
+		// long the command ran, exactly as the success path does.
+		start := time.Now()
 		// A panic in a bare goroutine takes the PROCESS down, not just the
 		// request -- one bad command would kill a replica that is serving
 		// everything else correctly. The caller is told something went wrong
 		// and the stack goes to the log.
+		//
+		// The recovered value is named rec rather than r: r is the Router, and
+		// shadowing it here is how this path lost the ability to answer at all.
 		defer func() {
-			if r := recover(); r != nil {
-				slog.ErrorContext(ctx, "deferred command panicked",
-					"command", name, "panic", r, "stack", string(debug.Stack()))
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			slog.ErrorContext(ctx, "deferred command panicked",
+				"command", name, "panic", rec, "stack", string(debug.Stack()))
+			// A panic is a failure of the command like any other, and this
+			// package's rule is that an edit ALWAYS lands: the ACK has already
+			// been written, so returning here leaves the caller watching
+			// "thinking" until Discord gives up, with nothing on a dashboard to
+			// say it happened.
+			r.observe(name, false, time.Since(start))
+			if editErr := r.edit(ctx, ictx.Interaction.Interaction, Reply{Content: genericFailure}); editErr != nil {
+				slog.ErrorContext(ctx, "could not deliver the reply for a panicked command",
+					"command", name, "error", editErr)
 			}
 		}()
 
-		start := time.Now()
 		reply, err := cmd.Handler(ctx, ictx)
 		if err != nil {
 			slog.ErrorContext(ctx, "deferred command failed", "command", name, "error", err)
 			if reply.Content == "" {
-				reply.Content = "Something went wrong. This has been logged."
+				reply.Content = genericFailure
 			}
 		}
 		r.observe(name, err == nil && !reply.UserError, time.Since(start))
@@ -443,6 +541,3 @@ func hasManageGuild(ic *discordgo.InteractionCreate) bool {
 	}
 	return ic.Member.Permissions&discordgo.PermissionManageGuild != 0
 }
-
-// ErrNoGuild is returned by handlers that only make sense inside a guild.
-var ErrNoGuild = errors.New("interactions: this command only works in a server")

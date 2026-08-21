@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -105,17 +103,17 @@ func (f *fakeDiscord) registeredGuild() string {
 	return f.guildPath
 }
 
-func migrationsFS(t *testing.T) fs.FS {
+// writeConfig produces a config file for one replica, on its own ports. It
+// names no pool size, so the replicas run on the default -- which is the value
+// a deployment gets, and therefore the one worth exercising.
+func writeConfig(t *testing.T, dir, dsn string, base, rconPort int) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
+	return writeConfigWith(t, dir, dsn, base, rconPort, "")
 }
 
-// writeConfig produces a config file for one replica, on its own ports.
-func writeConfig(t *testing.T, dir, dsn string, base, rconPort int) string {
+// writeConfigWith is writeConfig with extra keys inside the database block,
+// e.g. `, maxConns: 6`.
+func writeConfigWith(t *testing.T, dir, dsn string, base, rconPort int, databaseExtra string) string {
 	t.Helper()
 	path := filepath.Join(dir, fmt.Sprintf("replica-%d.yaml", base))
 	body := fmt.Sprintf(`logLevel: warn
@@ -123,14 +121,14 @@ interactions: {port: %d}
 ingest: {port: %d, secret: "0123456789abcdef0123456789abcdef"}
 metrics: {enabled: true, port: %d}
 pprof: {enabled: false, port: %d}
-database: {url: "%s"}
+database: {url: "%s"%s}
 discord:
   token: faketoken
   applicationId: "1"
   publicKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 rcon: {host: 127.0.0.1, port: %d, password: hunter2, timeoutSeconds: 2}
 leaderboard: {intervalSeconds: 5}
-`, base, base+1, base+2, base+3, dsn, rconPort)
+`, base, base+1, base+2, base+3, dsn, databaseExtra, rconPort)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -158,7 +156,11 @@ func TestTwoReplicasServeTogether(t *testing.T) {
 		t.Skipf("%s is not set", dbtest.URLEnv)
 	}
 	// The replicas must land in this package's schema like everything else.
-	dsn += "?search_path=" + dbtest.SchemaName()
+	// Appended as a further parameter rather than with a bare "?": a
+	// TEST_DATABASE_URL that already carries a query string would otherwise
+	// become "...?sslmode=disable?search_path=...", which pgx reads as one
+	// mangled value and the replicas would quietly use the wrong schema.
+	dsn = withParam(dsn, "search_path", dbtest.SchemaName())
 
 	discord := &fakeDiscord{}
 	ts := discord.start(t)
@@ -184,7 +186,7 @@ func TestTwoReplicasServeTogether(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := cmd.Serve(ctx, path, migrationsFS(t), cmd.WithDiscordHTTPClient(client)); err != nil {
+			if err := cmd.Serve(ctx, path, dbtest.MigrationsFS(t), cmd.WithDiscordHTTPClient(client)); err != nil {
 				t.Errorf("replica %s: %v", path, err)
 			}
 		}()
@@ -281,6 +283,56 @@ func TestTwoReplicasServeTogether(t *testing.T) {
 	if boards > 1 {
 		t.Errorf("%d leaderboard messages were posted; both replicas ran the job", boards)
 	}
+}
+
+// TestRefusesToBootWithAPoolTooSmallForTheJobs turns the outage that started
+// this into a startup failure.
+//
+// A pool that cannot cover the background jobs and the request traffic at the
+// same time does not report anything: it makes every interaction, webhook and
+// readiness probe queue in Acquire until its own deadline, which looks like
+// Discord being slow and the pod flapping. Refusing to start says what is
+// actually wrong, once, in the place an operator is already looking.
+func TestRefusesToBootWithAPoolTooSmallForTheJobs(t *testing.T) {
+	// Skips when no database is configured, and makes sure the schema exists.
+	dbtest.Pool(t)
+
+	dsn := os.Getenv(dbtest.URLEnv)
+	if dsn == "" {
+		t.Skipf("%s is not set", dbtest.URLEnv)
+	}
+	dsn = withParam(dsn, "search_path", dbtest.SchemaName())
+
+	discord := &fakeDiscord{}
+	ts := discord.start(t)
+	client := &http.Client{Transport: redirectTo(ts.URL)}
+	game := startFakeRCON(t)
+
+	// Six is above the configuration floor and still below what six singleton
+	// jobs plus live traffic need, which is exactly the deployment that used to
+	// start and then serve nothing.
+	path := writeConfigWith(t, t.TempDir(), dsn, 39300, game.port(), ", maxConns: 6")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := cmd.Serve(ctx, path, dbtest.MigrationsFS(t), cmd.WithDiscordHTTPClient(client))
+	if err == nil {
+		t.Fatal("a replica booted with a pool too small to serve its own background jobs")
+	}
+	if !strings.Contains(err.Error(), "maxConns") {
+		t.Errorf("error %q does not name the setting to change", err)
+	}
+}
+
+// withParam adds one query parameter to a connection URL, whether or not it
+// already has a query string.
+func withParam(dsn, key, value string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + url.QueryEscape(key) + "=" + url.QueryEscape(value)
 }
 
 func waitFor(t *testing.T, url string) {

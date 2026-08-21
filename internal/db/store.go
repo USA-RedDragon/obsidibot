@@ -15,8 +15,10 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,8 +32,26 @@ type Store struct {
 // Connect opens a pool for url and verifies it with a ping, so a bad URL fails
 // at startup rather than at the first interaction. On ping failure the pool is
 // closed before returning, so a failed Connect never leaks connections.
-func Connect(ctx context.Context, url string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, url)
+//
+// maxConns sizes the pool EXPLICITLY rather than leaving it to pgx, whose
+// default is max(4, runtime.NumCPU()). That default makes the same image behave
+// differently on every node size -- a comfortable pool on a build machine and a
+// four-connection pool on a 4-vCPU node -- and pool exhaustion does not present
+// as an error, it presents as every caller blocking in Acquire until its
+// deadline. It is a configured number here so that capacity is a deployment
+// decision rather than a property of the hardware that happened to schedule us.
+// It overrides any pool_max_conns carried in the URL: one place decides.
+func Connect(ctx context.Context, url string, maxConns int) (*Store, error) {
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	if maxConns < 1 || maxConns > math.MaxInt32 {
+		return nil, fmt.Errorf("database.maxConns %d must be between 1 and %d", maxConns, math.MaxInt32)
+	}
+	cfg.MaxConns = int32(maxConns) //nolint:gosec // range-checked immediately above
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create connection pool: %w", err)
 	}
@@ -65,6 +85,25 @@ func (s *Store) Close() {
 // control: the migration runner's advisory lock, and internal/leader's.
 func (s *Store) Pool() *pgxpool.Pool {
 	return s.pool
+}
+
+// ConnConfig returns a copy of the settings the pool dials with, for the one
+// caller that needs a connection OUTSIDE the pool: internal/leader, whose
+// advisory lock must sit on a single session for as long as leadership lasts
+// and must therefore never take that session out of the pool serving requests.
+//
+// A parsed config rather than the URL, because the URL may carry pgxpool's own
+// pool_* settings, which pgx.ParseConfig would pass to the server as unknown
+// parameters and the server would reject. A copy, so adjusting it cannot reach
+// into the pool's live configuration.
+func (s *Store) ConnConfig() *pgx.ConnConfig {
+	return s.pool.Config().ConnConfig.Copy()
+}
+
+// MaxConns reports the pool's connection ceiling, which is what callers have
+// to size their concurrency against: exceeding it does not fail, it queues.
+func (s *Store) MaxConns() int {
+	return int(s.pool.Config().MaxConns)
 }
 
 // Queries returns the generated query layer for one-shot reads and writes

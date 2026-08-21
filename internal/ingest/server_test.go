@@ -4,12 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -18,6 +14,7 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/dbtest"
 	"github.com/USA-RedDragon/obsidibot/internal/ingest"
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -25,22 +22,13 @@ const (
 	testServerGUID = "63a86971-0cb9-4569-a43a-4b05317f2d73"
 )
 
-func migrationsFS(t *testing.T) fs.FS {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
-}
-
 // serve builds the ingest handler on a real database and returns a client for
 // it. The route carries the secret, so this exercises the real path matching.
-func serve(t *testing.T) (*httptest.Server, *db.Store) {
+func serve(t *testing.T) (*httptest.Server, *db.Store, *pgxpool.Pool) {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := db.NewStore(pool)
@@ -52,7 +40,7 @@ func serve(t *testing.T) (*httptest.Server, *db.Store) {
 
 	ts := httptest.NewServer(ingest.New(store, metrics.New(), cfg, testServerGUID).Handler())
 	t.Cleanup(ts.Close)
-	return ts, store
+	return ts, store, pool
 }
 
 func post(t *testing.T, ts *httptest.Server, secret, body string) *http.Response {
@@ -84,7 +72,7 @@ func countEvents(t *testing.T, store *db.Store) int64 {
 // nothing, so this secret plus not being internet-reachable is the whole
 // defence.
 func TestWrongSecretIsRefused(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	for _, secret := range []string{
 		"", "wrong", strings.ToUpper(testSecret),
@@ -103,7 +91,7 @@ func TestWrongSecretIsRefused(t *testing.T) {
 
 // TestCorrectSecretRecordsTheEvent is the positive control.
 func TestCorrectSecretRecordsTheEvent(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, pool := serve(t)
 
 	resp := post(t, ts, testSecret, documentedPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -127,9 +115,14 @@ func TestCorrectSecretRecordsTheEvent(t *testing.T) {
 	if event.Rated || event.Posted {
 		t.Error("a freshly ingested event was already marked processed")
 	}
-	// The raw payload is kept so a rule change can be replayed, coordinates
-	// and all -- the rule is that nothing RENDERS them.
-	if !strings.Contains(string(event.Payload), "VictimLocation") {
+	// The raw payload is still stored for replay, even though the worker
+	// queries deliberately no longer select it.
+	var payload []byte
+	if err := pool.QueryRow(context.Background(),
+		"select payload from kill_events where id = $1", event.ID).Scan(&payload); err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if !strings.Contains(string(payload), "VictimLocation") {
 		t.Error("the raw payload was not preserved")
 	}
 }
@@ -137,7 +130,7 @@ func TestCorrectSecretRecordsTheEvent(t *testing.T) {
 // TestEventsFromAnotherServerAreRefused: a second game server pointed here by
 // mistake would otherwise merge its kills into this server's ratings.
 func TestEventsFromAnotherServerAreRefused(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	other := strings.Replace(documentedPayload, testServerGUID, "11111111-2222-3333-4444-555555555555", 1)
 	resp := post(t, ts, testSecret, other)
@@ -152,7 +145,7 @@ func TestEventsFromAnotherServerAreRefused(t *testing.T) {
 // TestRedeliveryIsCountedNotDoubled: the game may retry, and a retry must not
 // award the kill twice. 200 so it stops retrying.
 func TestRedeliveryIsCountedNotDoubled(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	for range 3 {
 		resp := post(t, ts, testSecret, documentedPayload)
@@ -168,7 +161,7 @@ func TestRedeliveryIsCountedNotDoubled(t *testing.T) {
 // TestMalformedBodiesAreRefused: a body without a victim has no subject, and
 // accepting it would put an unusable row into the ordered rating queue.
 func TestMalformedBodiesAreRefused(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	bodies := map[string]string{
 		"not json":          "{{{",
@@ -193,7 +186,7 @@ func TestMalformedBodiesAreRefused(t *testing.T) {
 // TestOversizedBodyIsRefused keeps an unauthenticated-ish endpoint from being a
 // memory sink.
 func TestOversizedBodyIsRefused(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(documentedPayload), &payload); err != nil {
@@ -217,7 +210,7 @@ func TestOversizedBodyIsRefused(t *testing.T) {
 // TestEnvironmentalDeathIsRecordedAsUncredited: it still has to arrive, because
 // it is still a death.
 func TestEnvironmentalDeathIsRecordedAsUncredited(t *testing.T) {
-	ts, store := serve(t)
+	ts, store, _ := serve(t)
 
 	body := `{"ServerGuid":"` + testServerGUID + `","DamageType":"DT_THIRST",` +
 		`"VictimName":"Test1","VictimAlderonId":"048-236-424","VictimDinosaurType":"Dilophosaurus",` +

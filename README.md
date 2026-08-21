@@ -290,6 +290,7 @@ Keep the application non-public and this cannot arise.
 | `rcon.timeoutSeconds` | `RCON_TIMEOUTSECONDS` | `10` | Covers a whole exchange: connect, authenticate, command, response |
 | `rcon.maxConcurrent` | `RCON_MAXCONCURRENT` | `4` | The game handles RCON on its game thread; keep this small |
 | `database.migrateOnStart` | `DATABASE_MIGRATEONSTART` | `true` | Migrations are serialised by an advisory lock, so every replica may run them |
+| `database.maxConns` | `DATABASE_MAXCONNS` | `16` | Pool size per replica. Set explicitly because pgx's own default is `max(4, NumCPU)` — the same image would then run a comfortable pool on a large node and a four-connection pool on a small one. **Startup refuses** if this leaves no room for the background jobs plus request traffic |
 
 **Rating** — the leaderboard is ordered by Elo. Beating a stronger player is
 worth more; farming a weaker one is worth almost nothing, and two players
@@ -310,13 +311,11 @@ trading kills net out near zero.
 
 | Key | Env | Default | Description |
 | --- | --- | --- | --- |
-| `killfeed.showPOI` | `KILLFEED_SHOWPOI` | `false` | Include the victim's point of interest. **Off by default: obsidibot does not publish where players are** |
 | `killfeed.retentionDays` | `KILLFEED_RETENTIONDAYS` | `30` | Processed events are pruned after this. Player totals are unaffected |
 | `leaderboard.intervalSeconds` | `LEADERBOARD_INTERVALSECONDS` | `60` | The board and the feed share a channel rate limit; a shorter tick starves the feed |
 | `leaderboard.size` | `LEADERBOARD_SIZE` | `20` | |
 | `bank.cooldownSeconds` | `BANK_COOLDOWNSECONDS` | `10` | Between transfers, per player |
-| `bank.verifyAttempts` | `BANK_VERIFYATTEMPTS` | `5` | Observation attempts before a transfer is parked for review |
-| `bank.verifyBackoffSeconds` | `BANK_VERIFYBACKOFFSECONDS` | `5` | |
+| `bank.verifyAttempts` | `BANK_VERIFYATTEMPTS` | `5` | Observation attempts before a transfer is parked for review. The wait between them is the reconciler's own tick |
 | `link.codeTTLSeconds` | `LINK_CODETTLSECONDS` | `300` | |
 | `link.maxAttempts` | `LINK_MAXATTEMPTS` | `5` | Wrong codes before a challenge is burned |
 | `link.reissueCooldownSeconds` | `LINK_REISSUECOOLDOWNSECONDS` | `30` | `/link start` whispers somebody in game; this stops it being a spam button |
@@ -361,6 +360,24 @@ their in-game name — so the board ranks the server rather than the subset of i
 that uses the bot.
 
 ## Operations
+
+### The kill feed
+
+Every field the game's `PlayerKilled` webhook reports is rendered, laid out as
+three inline columns (killer, victim, circumstances) rather than the twenty
+stacked lines the game's own Discord webhook posts. That includes both parties'
+coordinates and the point of interest — there is no flag, because the feed
+describes a fight that has already happened.
+
+`KillDistance` arrives in Unreal units and is rendered in metres.
+
+**The bot needs View Channel, Send Messages and Embed Links in the feed
+channel.** Channel permission overrides beat server-wide grants, so a read-only
+announcement channel needs an override for obsidibot's role specifically —
+leaving `@everyone` denied, which keeps the channel read-only for members. If it
+cannot post, it says so once every five minutes and keeps the backlog rather
+than retrying every second; kills are never dropped and appear as soon as the
+permission is granted.
 
 ### Probes
 

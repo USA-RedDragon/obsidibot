@@ -130,26 +130,35 @@ type GuildConfig struct {
 }
 
 type KillEvent struct {
-	ID            int64
-	ReceivedAt    time.Time
-	DedupeKey     []byte
-	ServerGuid    string
-	Payload       []byte
-	VictimAgid    string
-	VictimName    string
-	VictimDino    *string
-	VictimGrowth  *float64
-	VictimPoi     *string
-	KillerAgid    *string
-	KillerName    *string
-	KillerDino    *string
-	KillerGrowth  *float64
-	KillerIsAdmin bool
-	DamageType    string
-	Credited      bool
-	CountsDeath   bool
-	Rated         bool
-	Posted        bool
+	ID              int64
+	ReceivedAt      time.Time
+	DedupeKey       []byte
+	ServerGuid      string
+	Payload         []byte
+	VictimAgid      string
+	VictimName      string
+	VictimDino      *string
+	VictimGrowth    *float64
+	VictimPoi       *string
+	KillerAgid      *string
+	KillerName      *string
+	KillerDino      *string
+	KillerGrowth    *float64
+	KillerIsAdmin   bool
+	DamageType      string
+	Credited        bool
+	CountsDeath     bool
+	Rated           bool
+	Posted          bool
+	VictimCharacter *string
+	KillerCharacter *string
+	VictimRole      *string
+	KillerRole      *string
+	KillDistance    *float64
+	TimeOfDay       *int32
+	VictimIsAdmin   bool
+	VictimLocation  *string
+	KillerLocation  *string
 }
 
 type LinkChallenge struct {

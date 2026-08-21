@@ -3,10 +3,9 @@ package bank_test
 import (
 	"context"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"runtime"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,31 +20,89 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const testAGID = "555-000-101"
+const (
+	testAGID = "555-000-101"
+	// otherAGID is a second player, for the cases that turn on rows being
+	// INDEPENDENT: the partial unique index allows only one open operation per
+	// player, so two concurrent transfers need two of them.
+	otherAGID = "555-000-202"
+)
 
-// fakeRCON reports a marks balance and records every command, so a test can
+// fakeRCON stands in for the game server. It reports a marks balance, applies
+// AddMarks and RemoveMarks the way the game does -- clamping a removal at zero
+// and answering with what it did -- and records every command, so a test can
 // assert that recovery NEVER re-issues a mutating one.
 type fakeRCON struct {
 	mu       sync.Mutex
 	commands []string
 	marks    int64
 	online   bool
+	// fail makes the named command LAND AND LOSE ITS ANSWER: the mutation is
+	// applied and an error comes back instead of the reply. That is the case
+	// the package cannot resolve automatically, as opposed to a refusal, which
+	// proves nothing moved.
+	fail map[string]error
+	// during runs once, after the named command has taken effect in game but
+	// before its reply reaches the caller. That window -- the transfer is done
+	// but nothing has been written down yet -- is where the request path and
+	// the reconciler collide, and it is otherwise unreachable from a test.
+	during map[string]func()
 }
 
 func (f *fakeRCON) Execute(_ context.Context, command string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.commands = append(f.commands, command)
 	fields := strings.Fields(command)
-	if !f.online {
-		return fmt.Sprintf("(%s): No player with the username '%s'.", command, fields[1]), nil
+	verb := fields[0]
+
+	f.mu.Lock()
+	f.commands = append(f.commands, command)
+	// Popped rather than read, so a hook that issues commands of its own -- the
+	// point of it -- cannot re-enter itself.
+	hook := f.during[verb]
+	delete(f.during, verb)
+	err := f.fail[verb]
+	reply := f.replyLocked(command, fields)
+	f.mu.Unlock()
+
+	// Outside the lock: the hook stands in for another actor touching the same
+	// player while this command is in flight, and it needs the fake to answer.
+	if hook != nil {
+		hook()
 	}
-	if strings.EqualFold(fields[0], "PlayerInfo") {
+	if err != nil {
+		return "", err
+	}
+	return reply, nil
+}
+
+// replyLocked builds the server's answer and applies its effect. Called with
+// f.mu held.
+func (f *fakeRCON) replyLocked(command string, fields []string) string {
+	if !f.online {
+		return fmt.Sprintf("(%s): No player with the username '%s'.", command, fields[1])
+	}
+	switch {
+	case strings.EqualFold(fields[0], "PlayerInfo"):
 		return fmt.Sprintf(
 			"(%s): Name: kitty / AGID: %s / Dinosaur: Ceratosaurus / Role: None / Marks: %d / Growth: 1 /"+
-				" Location: (X=1.0 Y=2.0 Z=3.0)", command, testAGID, f.marks), nil
+				" Location: (X=1.0 Y=2.0 Z=3.0)", command, fields[1], f.marks)
+	case strings.EqualFold(fields[0], "AddMarks"), strings.EqualFold(fields[0], "RemoveMarks"):
+		amount, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return fmt.Sprintf("(%s): Command not recognized.", command)
+		}
+		if strings.EqualFold(fields[0], "AddMarks") {
+			f.marks += amount
+			return fmt.Sprintf("(%s): Added %d Marks to kitty. They now have %d Marks.", command, amount, f.marks)
+		}
+		// The game CLAMPS a removal at zero and says how much it really took.
+		if amount > f.marks {
+			amount = f.marks
+		}
+		f.marks -= amount
+		return fmt.Sprintf("(%s): Removed %d Marks from kitty. They now have %d Marks.", command, amount, f.marks)
+	default:
+		return fmt.Sprintf("(%s): ok", command)
 	}
-	return fmt.Sprintf("(%s): ok", command), nil
 }
 
 func (f *fakeRCON) mutations() []string {
@@ -61,49 +118,53 @@ func (f *fakeRCON) mutations() []string {
 	return out
 }
 
-func migrationsFS(t *testing.T) fs.FS {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
-}
-
 type harness struct {
 	pool  *pgxpool.Pool
 	store *db.Store
 	rcon  *fakeRCON
 	rec   *bank.Reconciler
+	// vault is the in-request path. It shares cfg with the reconciler, so a
+	// test can change the configuration -- the cooldown, above all -- before
+	// exercising either.
+	vault   *bank.Bank
+	cfg     *config.Config
+	metrics *metrics.Metrics
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := db.NewStore(pool)
-	fake := &fakeRCON{online: true, marks: 1000}
+	fake := &fakeRCON{online: true, marks: 1000, fail: map[string]error{}, during: map[string]func(){}}
 	cfg := &config.Config{Bank: config.Bank{
-		CooldownSeconds: 0, VerifyAttempts: 2, VerifyBackoffSeconds: 1,
+		CooldownSeconds: 0, VerifyAttempts: 2,
 	}}
 
+	h := &harness{pool: pool, store: store, rcon: fake, cfg: cfg, metrics: metrics.New()}
+	game := pot.NewClient(fake, nil)
+	h.rec = bank.NewReconciler(store, game, h.metrics, cfg)
+	h.vault = bank.New(store, game, h.metrics, cfg)
+	h.seedPlayer(t, testAGID)
+	return h
+}
+
+// seedPlayer gives an Alderon ID the player row the ledger's foreign key needs
+// and an empty bank account.
+func (h *harness) seedPlayer(t *testing.T, agid string) {
+	t.Helper()
 	ctx := context.Background()
-	q := store.Queries()
+	q := h.store.Queries()
 	if err := q.UpsertPlayerSeen(ctx, gen.UpsertPlayerSeenParams{
-		AlderonID: testAGID, LastKnownName: "kitty", Rating: 1200,
+		AlderonID: agid, LastKnownName: "kitty", Rating: 1200,
 	}); err != nil {
 		t.Fatalf("seed player: %v", err)
 	}
-	if err := q.EnsureBankAccount(ctx, testAGID); err != nil {
+	if err := q.EnsureBankAccount(ctx, agid); err != nil {
 		t.Fatalf("seed account: %v", err)
-	}
-
-	return &harness{
-		pool: pool, store: store, rcon: fake,
-		rec: bank.NewReconciler(store, pot.NewClient(fake, nil), metrics.New(), cfg),
 	}
 }
 
@@ -118,11 +179,18 @@ const (
 )
 
 func (h *harness) stranded(t *testing.T, direction gen.BankDirection, state gen.BankState) int64 {
+	t.Helper()
+	return h.strandedFor(t, testAGID, direction, state)
+}
+
+func (h *harness) strandedFor(t *testing.T, agid string,
+	direction gen.BankDirection, state gen.BankState,
+) int64 {
 	marksBefore := strandedBefore
 	t.Helper()
 	ctx := context.Background()
 	row, err := h.store.Queries().BeginOperation(ctx, gen.BeginOperationParams{
-		AlderonID: testAGID, DiscordUserID: "d1",
+		AlderonID: agid, DiscordUserID: "d1",
 		Direction: direction, Amount: strandedAmount, MarksBefore: &marksBefore,
 	})
 	if err != nil {
@@ -147,11 +215,63 @@ func (h *harness) state(t *testing.T, id int64) gen.BankLedger {
 
 func (h *harness) balance(t *testing.T) int64 {
 	t.Helper()
-	account, err := h.store.Queries().GetBankAccount(context.Background(), testAGID)
+	return h.balanceOf(t, testAGID)
+}
+
+func (h *harness) balanceOf(t *testing.T, agid string) int64 {
+	t.Helper()
+	account, err := h.store.Queries().GetBankAccount(context.Background(), agid)
 	if err != nil {
 		t.Fatalf("read balance: %v", err)
 	}
 	return account.Balance
+}
+
+// age pushes every open row past the reconciler's staleness threshold, standing
+// in for a request that has been running longer than the reconciler waits.
+func (h *harness) age(t *testing.T) {
+	t.Helper()
+	if _, err := h.pool.Exec(context.Background(),
+		"update bank_ledger set created_at = now() - interval '5 minutes'"+
+			" where state in ('pending', 'in_flight')"); err != nil {
+		t.Fatalf("age rows: %v", err)
+	}
+}
+
+// onlyRow returns the single ledger row a test's transfer produced.
+func (h *harness) onlyRow(t *testing.T) gen.BankLedger {
+	t.Helper()
+	var id int64
+	if err := h.pool.QueryRow(context.Background(),
+		"select id from bank_ledger order by id desc limit 1").Scan(&id); err != nil {
+		t.Fatalf("find ledger row: %v", err)
+	}
+	return h.state(t, id)
+}
+
+// counted reads one cell of obsidibot_bank_operations_total, through the
+// registry rather than the collector, so it sees exactly what a scrape would.
+func (h *harness) counted(t *testing.T, direction gen.BankDirection, result string) float64 {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	// The registry is itself the handler, so this is exactly the bytes a
+	// scrape would receive.
+	h.metrics.Registry.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	want := fmt.Sprintf("obsidibot_bank_operations_total{direction=%q,result=%q} ", direction, result)
+	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
+		if !strings.HasPrefix(line, want) {
+			continue
+		}
+		value, err := strconv.ParseFloat(strings.TrimPrefix(line, want), 64)
+		if err != nil {
+			t.Fatalf("unreadable counter line %q: %v", line, err)
+		}
+		return value
+	}
+	// A counter cell with no observations has never been touched. That is the
+	// very thing this helper exists to catch, so it is a zero, not an error.
+	return 0
 }
 
 // TestPendingRowsAreClosedAsFailed is the one automatic resolution that is

@@ -31,14 +31,26 @@ const (
 const maxPort = 65535
 
 // MaxTimeoutSeconds bounds rcon.timeoutSeconds. A command must fail fast enough
-// that a Discord interaction can still be answered inside its own deadline, and
-// the shutdown grace is derived from this.
+// that a Discord interaction can still be answered inside its own deadline.
 const MaxTimeoutSeconds = 60
 
 // MaxConcurrentLimit bounds rcon.maxConcurrent. Anything near this is already
 // far past what a Source server tolerates; the ceiling exists to catch a typo,
 // not to describe a workable setting.
 const MaxConcurrentLimit = 64
+
+// MinDatabaseMaxConns and MaxDatabaseMaxConns bound database.maxConns.
+//
+// The floor is not a performance number: a pool this small cannot overlap the
+// background jobs' queries with a slash command and a readiness ping, and the
+// symptom of that is not an error but every caller waiting in Acquire. The
+// ceiling exists to catch a typo, because each replica opens up to this many
+// and a deployment of several can take a Postgres server's max_connections
+// with it.
+const (
+	MinDatabaseMaxConns = 4
+	MaxDatabaseMaxConns = 500
+)
 
 // MinIngestSecretLen bounds ingest.secret. Path of Titans signs nothing, so this
 // string is the entire cryptographic defence of the ingest endpoint: it must be
@@ -68,11 +80,6 @@ type Interactions struct {
 	Port int    `name:"port" default:"8080" description:"port the Discord interactions endpoint listens on"`
 }
 
-// Addr returns the listen address in host:port form.
-func (i Interactions) Addr() string {
-	return net.JoinHostPort(i.Bind, strconv.Itoa(i.Port))
-}
-
 func (i Interactions) validate() []error {
 	var errs []error
 	if !validPort(i.Port) {
@@ -94,11 +101,6 @@ type Ingest struct {
 	// Secret is carried in the URL path because the game offers no other place
 	// to put a credential: it sends no signature and no configurable headers.
 	Secret string `name:"secret" description:"shared secret embedded in the webhook path (required); generate with openssl rand -hex 32"`
-}
-
-// Addr returns the listen address in host:port form.
-func (i Ingest) Addr() string {
-	return net.JoinHostPort(i.Bind, strconv.Itoa(i.Port))
 }
 
 func (i Ingest) validate() []error {
@@ -153,6 +155,13 @@ func (p PProf) validate() []error {
 type Database struct {
 	URL            string `name:"url" description:"connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too"`
 	MigrateOnStart bool   `name:"migrateOnStart" default:"true" description:"apply pending schema migrations on startup"`
+	// MaxConns is set explicitly because pgx's own default is max(4, NumCPU):
+	// the same image would then run a comfortable pool on a large node and a
+	// four-connection pool on a small one, and a pool that is too small does
+	// not fail, it makes every caller wait in Acquire until its deadline. The
+	// default here leaves room for the background jobs' queries and the
+	// interactions, ingest and readiness traffic at the same time.
+	MaxConns int `name:"maxConns" default:"16" description:"maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once"`
 }
 
 // DSN is the connection string to hand pgx. pgx accepts postgres:// and
@@ -170,6 +179,13 @@ func (d Database) validate() []error {
 	var errs []error
 	if d.URL == "" {
 		errs = append(errs, errors.New("database.url must not be empty"))
+	}
+	// The ceiling is a typo-catcher rather than a workable setting: every
+	// replica opens up to this many, so a four-digit value here is a way to
+	// exhaust the server's max_connections from one deployment.
+	if d.MaxConns < MinDatabaseMaxConns || d.MaxConns > MaxDatabaseMaxConns {
+		errs = append(errs, fmt.Errorf("database.maxConns %d must be between %d and %d",
+			d.MaxConns, MinDatabaseMaxConns, MaxDatabaseMaxConns))
 	}
 	return errs
 }
@@ -314,21 +330,17 @@ func (r Rating) validate() []error {
 // Bank configures marks banking.
 type Bank struct {
 	CooldownSeconds int `name:"cooldownSeconds" default:"10" description:"seconds a player must wait between banking operations"`
-	// A mutating RCON command is issued at most once per ledger row; these
-	// govern how hard the reconciler OBSERVES the outcome before giving up and
-	// parking the row for review. They never cause a command to be re-sent.
-	VerifyAttempts       int `name:"verifyAttempts" default:"5" description:"times to re-read a player's marks trying to confirm an unverified transfer before parking it for review"`
-	VerifyBackoffSeconds int `name:"verifyBackoffSeconds" default:"5" description:"seconds between verification attempts"`
+	// VerifyAttempts governs how hard the reconciler OBSERVES an unverified
+	// transfer before parking it for review. It never causes a command to be
+	// re-sent. The wait between attempts is the reconciler's own tick, not a
+	// separate setting -- an earlier verifyBackoffSeconds knob was wired to
+	// nothing and only made the budget look like attempts x backoff.
+	VerifyAttempts int `name:"verifyAttempts" default:"5" description:"times to re-read a player's marks trying to confirm an unverified transfer before parking it for review"`
 }
 
 // Cooldown returns the wait between banking operations.
 func (b Bank) Cooldown() time.Duration {
 	return time.Duration(b.CooldownSeconds) * time.Second
-}
-
-// VerifyBackoff returns the wait between verification attempts.
-func (b Bank) VerifyBackoff() time.Duration {
-	return time.Duration(b.VerifyBackoffSeconds) * time.Second
 }
 
 func (b Bank) validate() []error {
@@ -338,9 +350,6 @@ func (b Bank) validate() []error {
 	}
 	if b.VerifyAttempts < 1 || b.VerifyAttempts > 100 {
 		errs = append(errs, fmt.Errorf("bank.verifyAttempts %d must be between 1 and 100", b.VerifyAttempts))
-	}
-	if b.VerifyBackoffSeconds < 1 || b.VerifyBackoffSeconds > 3600 {
-		errs = append(errs, fmt.Errorf("bank.verifyBackoffSeconds %d must be between 1 and 3600", b.VerifyBackoffSeconds))
 	}
 	return errs
 }
@@ -371,10 +380,12 @@ func (l Leaderboard) validate() []error {
 
 // KillFeed configures the kill feed.
 type KillFeed struct {
-	// ShowPOI defaults OFF. A POI is a named region rather than a coordinate,
-	// but it still says where a player was, and this bot does not publish
-	// in-game positions.
-	ShowPOI bool `name:"showPOI" default:"false" description:"include the victim's point of interest in the kill feed"`
+	// The kill feed renders EVERY field the game reports, including the point
+	// of interest and both parties' coordinates. There is deliberately no flag:
+	// the feed exists to describe a fight that already happened, and a partial
+	// account of it was worth less than the privacy it bought. Live position --
+	// where somebody IS right now, via RCON PlayerInfo -- is a different
+	// question and is still never published; see internal/pot's package doc.
 	// Kill events are kept only until they have been rated and posted; the
 	// aggregates live on the player row and are unaffected by pruning.
 	RetentionDays int `name:"retentionDays" default:"30" description:"days to keep processed kill events before pruning"`

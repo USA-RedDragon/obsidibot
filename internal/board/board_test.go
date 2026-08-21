@@ -4,10 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -79,15 +75,6 @@ func (f *fakeMessenger) lastRendered() string {
 	return ""
 }
 
-func migrationsFS(t *testing.T) fs.FS {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
-}
-
 type harness struct {
 	pool  *pgxpool.Pool
 	store *db.Store
@@ -100,7 +87,7 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := db.NewStore(pool)

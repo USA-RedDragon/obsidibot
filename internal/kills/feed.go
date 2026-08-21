@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/USA-RedDragon/obsidibot/internal/config"
@@ -48,6 +51,7 @@ const blockedBackoff = 5 * time.Minute
 const (
 	colourKill        = 0xC0392B // red
 	colourEnvironment = 0x7F8C8D // grey
+	colourUnranked    = 0xE67E22 // orange: it happened, but it did not count
 )
 
 // Feed posts one message per kill, in order.
@@ -181,41 +185,164 @@ func (f *Feed) channel(ctx context.Context) (string, error) {
 	return *cfg.KillFeedChannelID, nil
 }
 
-// embed renders one kill.
+// embed renders one kill, carrying EVERY field the game reports.
 //
-// It carries NO COORDINATES. VictimPOI is a named region rather than a
-// position, and is included only when killfeed.showPOI is on, which it is not
-// by default.
-func (f *Feed) embed(event gen.KillEvent) *discordgo.MessageEmbed {
-	victim := discordfmt.Describe(event.VictimName, event.VictimDino, event.VictimGrowth)
-
+// The game's own Discord webhook posts a raw field dump -- twenty labelled
+// lines including two coordinate triples -- which is complete but unreadable in
+// a busy channel. This keeps all of it and arranges it: who and whom in the
+// title, the two combatants side by side, and the circumstances underneath.
+func (f *Feed) embed(event gen.NextUnpostedEventsRow) *discordgo.MessageEmbed {
 	embed := &discordgo.MessageEmbed{
 		Timestamp: event.ReceivedAt.Format(time.RFC3339),
 		Color:     colourEnvironment,
 	}
 
-	switch {
-	case event.KillerAgid == nil:
-		embed.Description = fmt.Sprintf("**%s** %s", victim, environmentPhrase(event.DamageType))
-	case event.Credited:
-		embed.Color = colourKill
-		embed.Description = fmt.Sprintf("**%s** killed **%s**",
-			discordfmt.Describe(derefOr(event.KillerName, *event.KillerAgid), event.KillerDino, event.KillerGrowth),
-			victim)
-	default:
-		// A kill the rules did not credit -- an admin, or a self-kill. It still
-		// happened, so the feed still shows it; it simply moved no rating.
-		embed.Description = fmt.Sprintf("**%s** killed **%s** *(unranked)*",
-			discordfmt.Describe(derefOr(event.KillerName, *event.KillerAgid), event.KillerDino, event.KillerGrowth),
-			victim)
+	victimName := discordfmt.EscapeMarkdown(event.VictimName)
+	killerName := ""
+	if event.KillerAgid != nil {
+		killerName = discordfmt.EscapeMarkdown(derefOr(event.KillerName, *event.KillerAgid))
 	}
 
-	if f.cfg.KillFeed.ShowPOI && event.VictimPoi != nil && *event.VictimPoi != "" {
+	switch {
+	case event.KillerAgid == nil:
+		embed.Title = victimName + " " + environmentPhrase(event.DamageType)
+	case event.Credited:
+		embed.Color = colourKill
+		embed.Title = killerName + " killed " + victimName
+	default:
+		// A kill the rules did not credit -- an admin's, or a self-kill. It
+		// still happened, so the feed still shows it; it moved no rating.
+		embed.Color = colourUnranked
+		embed.Title = killerName + " killed " + victimName
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: "unranked - does not affect rating or K/D"}
+	}
+
+	if event.KillerAgid != nil {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name: "Location", Value: discordfmt.EscapeMarkdown(*event.VictimPoi), Inline: true,
+			Name: "Killer", Inline: true,
+			Value: combatant(derefOr(event.KillerName, *event.KillerAgid), *event.KillerAgid,
+				event.KillerCharacter, event.KillerDino, event.KillerGrowth,
+				event.KillerRole, event.KillerIsAdmin),
+		})
+	}
+	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+		Name: "Victim", Inline: true,
+		Value: combatant(event.VictimName, event.VictimAgid,
+			event.VictimCharacter, event.VictimDino, event.VictimGrowth,
+			event.VictimRole, event.VictimIsAdmin),
+	})
+
+	if details := circumstances(event); details != "" {
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name: "Where & how", Inline: true, Value: details,
 		})
 	}
 	return embed
+}
+
+// combatant renders one party: who they are, which character, what they were
+// playing, how grown, what role, and their Alderon ID.
+func combatant(name, agid string, character, species *string, growth *float64,
+	role *string, isAdmin bool,
+) string {
+	var b strings.Builder
+	b.WriteString("**" + discordfmt.EscapeMarkdown(name) + "**")
+	if isAdmin {
+		b.WriteString(" - admin")
+	}
+	b.WriteString("\n`" + discordfmt.EscapeMarkdown(agid) + "`")
+
+	if character != nil && *character != "" {
+		b.WriteString("\n" + discordfmt.EscapeMarkdown(*character))
+	}
+
+	line := ""
+	if species != nil && *species != "" {
+		line = discordfmt.EscapeMarkdown(*species)
+	}
+	if growth != nil {
+		if line != "" {
+			line += " / "
+		}
+		line += fmt.Sprintf("%.0f%%", *growth*100)
+	}
+	if line != "" {
+		b.WriteString("\n" + line)
+	}
+	if role != nil && *role != "" {
+		b.WriteString("\n" + discordfmt.EscapeMarkdown(*role))
+	}
+	return b.String()
+}
+
+// circumstances renders where and how: the point of interest, the damage type,
+// how far apart the two were, the in-world clock, and both coordinates.
+func circumstances(event gen.NextUnpostedEventsRow) string {
+	var lines []string
+	if event.VictimPoi != nil && *event.VictimPoi != "" {
+		lines = append(lines, discordfmt.EscapeMarkdown(*event.VictimPoi))
+	}
+
+	how := damageLabel(event.DamageType)
+	if event.KillDistance != nil {
+		// The game reports Unreal units, i.e. centimetres. Verified against a
+		// real event by recomputing the distance from the two coordinates.
+		how += fmt.Sprintf(" / %.1f m", *event.KillDistance/100)
+	}
+	lines = append(lines, how)
+
+	if event.TimeOfDay != nil {
+		lines = append(lines, fmt.Sprintf("%02d:%02d in-world", *event.TimeOfDay/100, *event.TimeOfDay%100))
+	}
+	if coords := formatLocation(event.KillerLocation); coords != "" {
+		lines = append(lines, "K `"+coords+"`")
+	}
+	if coords := formatLocation(event.VictimLocation); coords != "" {
+		lines = append(lines, "V `"+coords+"`")
+	}
+	return strings.Join(lines, "\n")
+}
+
+//nolint:gochecknoglobals // compiled once and never reassigned
+var locationRE = regexp.MustCompile(
+	`X=(-?[\d.]+)\s*,?\s*Y=(-?[\d.]+)\s*,?\s*Z=(-?[\d.]+)`)
+
+// formatLocation turns the game's "(X=105140.83,Y=162629.63,Z=-410.86)" into
+// something a person can read. Unparseable input renders as nothing rather than
+// as a broken string.
+func formatLocation(raw *string) string {
+	if raw == nil || *raw == "" {
+		return ""
+	}
+	m := locationRE.FindStringSubmatch(*raw)
+	if m == nil {
+		return ""
+	}
+	out := make([]string, 0, 3)
+	for _, axis := range m[1:4] {
+		v, err := strconv.ParseFloat(axis, 64)
+		if err != nil {
+			return ""
+		}
+		out = append(out, strconv.FormatInt(int64(v), 10))
+	}
+	return strings.Join(out, ", ")
+}
+
+// damageLabel renders a damage type as a noun for the details line.
+func damageLabel(damageType string) string {
+	if label, ok := damageLabels[damageType]; ok {
+		return label
+	}
+	return discordfmt.EscapeMarkdown(damageType)
+}
+
+//nolint:gochecknoglobals // a lookup table, never reassigned
+var damageLabels = map[string]string{
+	"DT_ATTACK": "Attack", "DT_THIRST": "Thirst", "DT_HUNGER": "Hunger",
+	"DT_OXYGEN": "Drowning", "DT_BLEED": "Bleeding", "DT_BREAKLEGS": "Fall",
+	"DT_TRAMPLE": "Trampled", "DT_SPIKES": "Spikes", "DT_GENERIC": "Unknown causes",
+	"DT_ARMORPIERCING": "Armour piercing",
 }
 
 // environmentPhrase turns a damage type into something readable. An unknown one

@@ -179,6 +179,12 @@ func (b *Banker) explain(err error, direction gen.BankDirection) interactions.Re
 			return userError("Your dinosaur has no marks to deposit.")
 		}
 		return userError("You have no marks banked to withdraw.")
+	case errors.Is(err, bank.ErrRaced):
+		// Nothing was sent to the game, so this is the one failure that is
+		// genuinely safe to retry -- and saying so is better than the generic
+		// "something went wrong", which invites the player to assume the worst
+		// about marks that never moved.
+		return userError("That did not go through — nothing was moved. Try again.")
 	case errors.Is(err, bank.ErrNeedsReview):
 		return interactions.Reply{Content: "The game server did not confirm that transfer, so the bot has " +
 			"**not** changed your balance and has flagged it for a moderator to check. " +

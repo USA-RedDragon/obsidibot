@@ -48,13 +48,23 @@ func (f *fakePoster) ChannelMessageSendComplex(_ string, data *discordgo.Message
 	return &discordgo.Message{ID: "m1"}, nil
 }
 
+// rendered flattens each posted embed into one string, so a test can assert on
+// what a reader would actually see regardless of which part carries it.
 func (f *fakePoster) descriptions() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.sends))
 	for _, send := range f.sends {
-		if len(send.Embeds) > 0 {
-			out = append(out, send.Embeds[0].Description)
+		for _, e := range send.Embeds {
+			var b strings.Builder
+			b.WriteString(e.Title + "\n" + e.Description)
+			for _, field := range e.Fields {
+				b.WriteString("\n" + field.Name + ": " + field.Value)
+			}
+			if e.Footer != nil {
+				b.WriteString("\n" + e.Footer.Text)
+			}
+			out = append(out, b.String())
 		}
 	}
 	return out
@@ -121,84 +131,6 @@ func TestFeedPostsInOrder(t *testing.T) {
 	}
 	if !strings.Contains(got[2], "died of thirst") {
 		t.Errorf("environmental death rendered as %q", got[2])
-	}
-}
-
-// TestFeedNeverPublishesAPosition is the end-to-end form of the rule. The
-// payload carries coordinates and POI; neither may reach a channel with the
-// default configuration.
-func TestFeedNeverPublishesAPosition(t *testing.T) {
-	h := newHarness(t)
-	h.setKillChannel(t)
-
-	ctx := context.Background()
-	poi := "Talons Point"
-	if _, err := h.store.Queries().InsertKillEvent(ctx, gen.InsertKillEventParams{
-		DedupeKey:  []byte("position-test-key-padding-32byte"),
-		ServerGuid: "guid",
-		Payload:    []byte(`{"VictimLocation":"(X=328866.125,Y=-130023.359375,Z=853.25)"}`),
-		VictimAgid: bob, VictimName: "player-" + bob, VictimPoi: &poi,
-		DamageType: "DT_THIRST", Credited: false, CountsDeath: true,
-	}); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-
-	poster := &fakePoster{}
-	h.runFeed(t, poster)
-
-	poster.mu.Lock()
-	defer poster.mu.Unlock()
-	for _, send := range poster.sends {
-		for _, embed := range send.Embeds {
-			rendered := embed.Description
-			for _, field := range embed.Fields {
-				rendered += " " + field.Name + " " + field.Value
-			}
-			for _, forbidden := range []string{"X=", "Y=", "328866", "Talons Point"} {
-				if strings.Contains(rendered, forbidden) {
-					t.Errorf("the kill feed published %q: %s", forbidden, rendered)
-				}
-			}
-		}
-	}
-}
-
-// TestFeedShowsPOIWhenConfigured is the other half: the flag has to actually do
-// something, or it is a comment pretending to be a setting.
-func TestFeedShowsPOIWhenConfigured(t *testing.T) {
-	h := newHarness(t)
-	h.cfg.KillFeed.ShowPOI = true
-	h.setKillChannel(t)
-
-	ctx := context.Background()
-	poi := "Talons Point"
-	if _, err := h.store.Queries().InsertKillEvent(ctx, gen.InsertKillEventParams{
-		DedupeKey:  []byte("poi-shown-test-key-padding-32byt"),
-		ServerGuid: "guid",
-		Payload:    []byte(`{}`),
-		VictimAgid: bob, VictimName: "player-" + bob, VictimPoi: &poi,
-		DamageType: "DT_THIRST", Credited: false, CountsDeath: true,
-	}); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-
-	poster := &fakePoster{}
-	h.runFeed(t, poster)
-
-	poster.mu.Lock()
-	defer poster.mu.Unlock()
-	var found bool
-	for _, send := range poster.sends {
-		for _, embed := range send.Embeds {
-			for _, field := range embed.Fields {
-				if strings.Contains(field.Value, "Talons Point") {
-					found = true
-				}
-			}
-		}
-	}
-	if !found {
-		t.Error("killfeed.showPOI was on but no POI was rendered")
 	}
 }
 

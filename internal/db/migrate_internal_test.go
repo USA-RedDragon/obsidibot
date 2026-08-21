@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestStripTxControlStrips covers the shapes 0001 actually has (a leading
+// TestStripTxControlStrips covers the shapes the migrations have (a leading
 // begin under a comment header, a trailing commit before trailing
-// whitespace/comments, dollar-quoted function bodies) plus the idempotence
-// guarantee: stripping already-stripped input must be a no-op, because a
+// whitespace/comments) and the ones they may grow (dollar-quoted function
+// bodies), plus the idempotence guarantee: stripping already-stripped input must be a no-op, because a
 // crash-restart may strip the same file twice.
 func TestStripTxControlStrips(t *testing.T) {
 	tests := []struct {

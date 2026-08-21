@@ -17,7 +17,7 @@ func valid() Config {
 		Ingest:       Ingest{Port: 8081, Secret: testSecret},
 		Metrics:      Metrics{Enabled: true, Port: 9090},
 		PProf:        PProf{Enabled: false, Port: 6060},
-		Database:     Database{URL: "postgres://user:pass@host:5432/obsidibot"},
+		Database:     Database{URL: "postgres://user:pass@host:5432/obsidibot", MaxConns: 16},
 		Discord: Discord{
 			Token:         "token",
 			ApplicationID: "12345",
@@ -25,7 +25,7 @@ func valid() Config {
 		},
 		RCON:        RCON{Host: "127.0.0.1", Port: 7779, Password: "hunter2", TimeoutSeconds: 10, MaxConcurrent: 4},
 		Rating:      Rating{Initial: 1200, ProvisionalK: 40, SettlingK: 20, StableK: 16, ProvisionalGames: 20, SettlingGames: 50, DecayGraceDays: 30, DecayPermillePerDay: 5},
-		Bank:        Bank{CooldownSeconds: 10, VerifyAttempts: 5, VerifyBackoffSeconds: 5},
+		Bank:        Bank{CooldownSeconds: 10, VerifyAttempts: 5},
 		Leaderboard: Leaderboard{IntervalSeconds: 60, Size: 20},
 		KillFeed:    KillFeed{RetentionDays: 30},
 		Link:        Link{CodeTTLSeconds: 300, MaxAttempts: 5, ReissueCooldownSeconds: 30},
@@ -56,6 +56,11 @@ func TestValidateRangeChecks(t *testing.T) {
 		{"metrics port when enabled", func(c *Config) { c.Metrics.Port = 0 }, "metrics.port"},
 		{"pprof port when enabled", func(c *Config) { c.PProf.Enabled = true; c.PProf.Port = 99999 }, "pprof.port"},
 		{"empty database url", func(c *Config) { c.Database.URL = "" }, "database.url"},
+		// A pool this small does not fail, it makes every caller queue in
+		// Acquire until its deadline -- which is why it is refused up front.
+		{"database maxConns unset", func(c *Config) { c.Database.MaxConns = 0 }, "database.maxConns"},
+		{"database maxConns too small", func(c *Config) { c.Database.MaxConns = MinDatabaseMaxConns - 1 }, "database.maxConns"},
+		{"database maxConns absurd", func(c *Config) { c.Database.MaxConns = MaxDatabaseMaxConns + 1 }, "database.maxConns"},
 		{"empty discord token", func(c *Config) { c.Discord.Token = "" }, "discord.token"},
 		{"empty application id", func(c *Config) { c.Discord.ApplicationID = "" }, "discord.applicationId"},
 		{"short public key", func(c *Config) { c.Discord.PublicKey = "abcd" }, "discord.publicKey"},
@@ -208,13 +213,5 @@ func TestAddrs(t *testing.T) {
 	cfg := valid()
 	if got := cfg.RCON.Addr(); got != "127.0.0.1:7779" {
 		t.Errorf("RCON.Addr() = %q", got)
-	}
-	// An empty bind must produce ":port" so the listener covers every
-	// interface rather than a host literally named "".
-	if got := cfg.Interactions.Addr(); got != ":8080" {
-		t.Errorf("Interactions.Addr() = %q", got)
-	}
-	if got := cfg.Ingest.Addr(); got != ":8081" {
-		t.Errorf("Ingest.Addr() = %q", got)
 	}
 }

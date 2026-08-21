@@ -118,12 +118,12 @@ func applyMigration(ctx context.Context, conn *pgxpool.Conn, migrations fs.FS, n
 		return fmt.Errorf("migration %s: %w", name, err)
 	}
 
-	// Migration files may create pg_temp helpers (0001 does). The temp
-	// namespace is session-scoped and this connection comes from a pool, so an
-	// earlier file -- or an earlier Migrate on the same session -- may have
-	// left those helpers behind, and re-creating them would fail. Give every
-	// file a fresh temp namespace; outside the transaction so a rollback
-	// cannot resurrect anything.
+	// A migration file MAY create pg_temp helpers. None currently does, but
+	// the temp namespace is session-scoped and this connection comes from a
+	// pool, so one that did could collide with an earlier file -- or an earlier
+	// Migrate on the same session -- and re-creating them would fail. Give
+	// every file a fresh temp namespace; outside the transaction so a rollback
+	// cannot resurrect anything. Cheap insurance, one round trip per file.
 	if _, err := conn.Exec(ctx, "discard temp"); err != nil {
 		return fmt.Errorf("discard temp before migration %s: %w", name, err)
 	}

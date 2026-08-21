@@ -50,11 +50,6 @@ func NewClient(exec Executor, notify Observer) *Client {
 //nolint:gochecknoglobals // compiled once and never reassigned
 var identifierRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,32}$`)
 
-// agidRE matches an Alderon ID: three groups of three digits.
-//
-//nolint:gochecknoglobals // compiled once and never reassigned
-var agidRE = regexp.MustCompile(`^\d{3}-\d{3}-\d{3}$`)
-
 // ErrInvalidIdentifier means a player identifier was not something that could
 // safely be put on a command line.
 var ErrInvalidIdentifier = errors.New("pot: invalid player identifier")
@@ -62,11 +57,6 @@ var ErrInvalidIdentifier = errors.New("pot: invalid player identifier")
 // ValidIdentifier reports whether ident is safe to interpolate into a command.
 func ValidIdentifier(ident string) bool {
 	return identifierRE.MatchString(ident)
-}
-
-// IsAGID reports whether ident has the shape of an Alderon ID.
-func IsAGID(ident string) bool {
-	return agidRE.MatchString(ident)
 }
 
 // maxMessageLen bounds a message body. rcon.MaxCommandLen caps the whole
@@ -88,16 +78,6 @@ func (c *Client) PlayerInfo(ctx context.Context, ident string) (Player, error) {
 		return Player{}, err
 	}
 	return ParsePlayerInfo(raw)
-}
-
-// PlayerInfoAll returns every connected player.
-func (c *Client) PlayerInfoAll(ctx context.Context) ([]Player, int, int, error) {
-	raw, err := c.run(ctx, "PlayerInfoAll")
-	if err != nil {
-		return nil, NoReportedTotal, 0, err
-	}
-	players, total, failures := ParsePlayerInfoAll(raw)
-	return players, total, failures, nil
 }
 
 // AddMarks gives marks to a player and reports what the server said it did.
@@ -151,12 +131,6 @@ func (c *Client) Whisper(ctx context.Context, ident, message string) error {
 	return c.message(ctx, "Whisper", ident, message)
 }
 
-// SystemMessage sends a system notification to one player. It is the fallback
-// for Whisper on clients where a whisper is easy to miss.
-func (c *Client) SystemMessage(ctx context.Context, ident, message string) error {
-	return c.message(ctx, "SystemMessage", ident, message)
-}
-
 func (c *Client) message(ctx context.Context, verb, ident, message string) error {
 	if !ValidIdentifier(ident) {
 		return fmt.Errorf("%w: %q", ErrInvalidIdentifier, ident)
@@ -172,7 +146,7 @@ func (c *Client) message(ctx context.Context, verb, ident, message string) error
 	if err := CheckRejected(verb, raw); err != nil {
 		return err
 	}
-	if notOnlineRE.MatchString(raw) {
+	if notOnline(raw) {
 		return ErrPlayerNotOnline
 	}
 	return nil

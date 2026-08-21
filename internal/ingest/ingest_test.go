@@ -10,6 +10,34 @@ import (
 
 // documentedPayload is the PlayerKilled example from Alderon's webhook
 // documentation, verbatim. Decoding this is the contract.
+// livePayload is a real PvP kill as the SERVER sends it, which differs from the
+// documented shape: DinosaurVictimName rather than VictimCharacterName, plus
+// KillDistance, VictimRole and KillerRole that the docs do not mention.
+// Identifiers are anonymised.
+const livePayload = `{
+    "TimeOfDay": 1411,
+    "DamageType": "DT_ATTACK",
+    "VictimPOI": "Green Valley",
+    "VictimName": "testplayer",
+    "VictimAlderonId": "555-000-101",
+    "DinosaurVictimName": "lll",
+    "VictimDinosaurType": "Miragaia",
+    "VictimRole": "Owner",
+    "VictimIsAdmin": true,
+    "VictimGrowth": 1,
+    "VictimLocation": "(X=105140.83,Y=162629.63,Z=-410.86)",
+    "KillerName": "otherplayer",
+    "KillerAlderonId": "555-000-202",
+    "KillerCharacterName": "Thel",
+    "KillerDinosaurType": "Allosaurus",
+    "KillerRole": "",
+    "KillerIsAdmin": false,
+    "KillerGrowth": 1,
+    "KillerLocation": "(X=105127.26,Y=163060.36,Z=-470.88)",
+    "KillDistance": 435.103296,
+    "ServerGuid": "63a86971-0cb9-4569-a43a-4b05317f2d73"
+}`
+
 const documentedPayload = `{
     "ServerGuid": "63a86971-0cb9-4569-a43a-4b05317f2d73",
     "TimeOfDay": 1300,
@@ -55,22 +83,57 @@ func TestDecodesTheDocumentedPayload(t *testing.T) {
 	}
 }
 
-// TestPayloadCarriesNoCoordinates is the structural half of "obsidibot never
-// publishes where a player is". The payload HAS locations; this type must not,
-// so nothing downstream can render one by accident.
-func TestPayloadCarriesNoCoordinates(t *testing.T) {
+// TestPayloadCarriesEveryReportedField. The kill feed reproduces the game's own
+// webhook in full, so anything the server sends must survive decoding --
+// including the coordinates, which an earlier revision deliberately dropped.
+// That rule was reversed: the feed describes a fight that already happened, and
+// a partial account of it was worth less than the privacy it bought.
+//
+// Live position -- where somebody IS now, via RCON PlayerInfo -- is a separate
+// question and is still never published; see internal/pot's package doc.
+func TestPayloadCarriesEveryReportedField(t *testing.T) {
 	var event ingest.PlayerKilled
-	if err := json.Unmarshal([]byte(documentedPayload), &event); err != nil {
+	if err := json.Unmarshal([]byte(livePayload), &event); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	blob, err := json.Marshal(event)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	for _, forbidden := range []string{"Location", "X=", "Y=", "328866"} {
-		if strings.Contains(string(blob), forbidden) {
-			t.Errorf("the decoded event carries %q; coordinates must be dropped at the boundary", forbidden)
+	// KillerRole is deliberately absent from this list: the real payload this
+	// fixture reproduces carries it as an empty string, so "populated" is not
+	// the contract for it -- only that the field exists to receive one.
+	for name, got := range map[string]any{
+		"VictimCharacterName": event.VictimCharacterName,
+		"VictimRole":          event.VictimRole,
+		"VictimLocation":      event.VictimLocation,
+		"KillerCharacterName": event.KillerCharacterName,
+		"KillerLocation":      event.KillerLocation,
+		"KillDistance":        event.KillDistance,
+		"TimeOfDay":           event.TimeOfDay,
+	} {
+		if got == "" || got == 0 || got == 0.0 {
+			t.Errorf("%s did not decode (got %#v)", name, got)
 		}
+	}
+}
+
+// TestVictimCharacterComesFromDinosaurVictimName pins the one place the live
+// server disagrees with Alderon's documentation.
+//
+// The docs name the victim's character `VictimCharacterName`; the server
+// actually sends `DinosaurVictimName`, while the KILLER's side really is
+// `KillerCharacterName`. Binding the documented name silently yielded an empty
+// string for every victim, which is exactly the kind of bug a schema mismatch
+// hides: nothing errors, a field is just always blank.
+func TestVictimCharacterComesFromDinosaurVictimName(t *testing.T) {
+	var event ingest.PlayerKilled
+	if err := json.Unmarshal([]byte(livePayload), &event); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if event.VictimCharacterName != "lll" {
+		t.Errorf("VictimCharacterName = %q, want the DinosaurVictimName value", event.VictimCharacterName)
+	}
+	// And the documented spelling must NOT be what populates it.
+	if !strings.Contains(livePayload, "DinosaurVictimName") ||
+		strings.Contains(livePayload, "VictimCharacterName") {
+		t.Fatal("this fixture no longer exercises the mismatch it was written for")
 	}
 }
 

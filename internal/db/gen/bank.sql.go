@@ -59,13 +59,13 @@ func (q *Queries) BeginOperation(ctx context.Context, arg BeginOperationParams) 
 	return i, err
 }
 
-const completeOperation = `-- name: CompleteOperation :exec
+const completeOperation = `-- name: CompleteOperation :execrows
 update bank_ledger
    set state       = 'applied',
        moved       = $2,
        marks_after = $3,
        resolved_at = now()
- where id = $1
+ where id = $1 and state = 'in_flight'
 `
 
 type CompleteOperationParams struct {
@@ -77,9 +77,19 @@ type CompleteOperationParams struct {
 // CompleteOperation closes a confirmed transfer. Paired with the balance update
 // in one transaction by the caller, because a moved balance and an open row are
 // indistinguishable from theft.
-func (q *Queries) CompleteOperation(ctx context.Context, arg CompleteOperationParams) error {
-	_, err := q.db.Exec(ctx, completeOperation, arg.ID, arg.Moved, arg.MarksAfter)
-	return err
+//
+// The state guard makes the row itself the lock on the balance move. The
+// request path and the reconciler can both be holding the same transfer -- the
+// reconciler picks a row up on the assumption the request died, and it may not
+// have -- and whoever loses the race updates 0 rows and must roll back rather
+// than credit the balance a second time. Without it a slow-but-successful
+// transfer is credited twice, which mints currency.
+func (q *Queries) CompleteOperation(ctx context.Context, arg CompleteOperationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeOperation, arg.ID, arg.Moved, arg.MarksAfter)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countNeedsReview = `-- name: CountNeedsReview :one
@@ -143,12 +153,41 @@ func (q *Queries) EnsureBankAccount(ctx context.Context, alderonID string) error
 	return err
 }
 
-const failOperation = `-- name: FailOperation :exec
+const failAbandonedOperation = `-- name: FailAbandonedOperation :execrows
 update bank_ledger
    set state       = 'failed',
        error       = $2,
        resolved_at = now()
- where id = $1
+ where id = $1 and state = 'pending'
+`
+
+type FailAbandonedOperationParams struct {
+	ID    int64
+	Error *string
+}
+
+// FailAbandonedOperation closes a row that never left pending, which PROVES the
+// command was never sent -- in_flight is written first, always.
+//
+// THE GUARD IS THE PROOF. The reconciler reads its candidates outside the
+// transaction that resolves them, because resolving means an RCON round trip
+// per row. So a row it read as pending may have been claimed since, and the
+// moment it is claimed "nothing was sent" stops being true. 0 rows means
+// exactly that, and the row belongs to the request that claimed it.
+func (q *Queries) FailAbandonedOperation(ctx context.Context, arg FailAbandonedOperationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failAbandonedOperation, arg.ID, arg.Error)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failOperation = `-- name: FailOperation :execrows
+update bank_ledger
+   set state       = 'failed',
+       error       = $2,
+       resolved_at = now()
+ where id = $1 and state = 'in_flight'
 `
 
 type FailOperationParams struct {
@@ -156,11 +195,17 @@ type FailOperationParams struct {
 	Error *string
 }
 
-// FailOperation closes a row whose command provably did not run. Nothing moved,
-// so the player is exactly where they started.
-func (q *Queries) FailOperation(ctx context.Context, arg FailOperationParams) error {
-	_, err := q.db.Exec(ctx, failOperation, arg.ID, arg.Error)
-	return err
+// FailOperation closes a row whose command WAS sent and came back refused: the
+// server answered that it did nothing, so the player is exactly where they
+// started. Only the request path can know that, which is why the guard is
+// in_flight -- it is the state that request put the row in before sending.
+// 0 rows means the row was resolved by someone else first.
+func (q *Queries) FailOperation(ctx context.Context, arg FailOperationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failOperation, arg.ID, arg.Error)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getBankAccount = `-- name: GetBankAccount :one
@@ -202,19 +247,30 @@ func (q *Queries) GetOperation(ctx context.Context, id int64) (BankLedger, error
 }
 
 const lastOperationAt = `-- name: LastOperationAt :one
-select max(created_at)::timestamptz from bank_ledger where alderon_id = $1
+select created_at from bank_ledger
+ where alderon_id = $1
+ order by created_at desc
+ limit 1
 `
 
 // LastOperationAt drives the per-user cooldown. Derived from the ledger rather
 // than a separate table, so there is nothing to keep in step with it.
+//
+// DELIBERATELY NOT max(created_at). An aggregate over zero rows still returns
+// ONE ROW CONTAINING NULL, which sqlc scans into a plain time.Time and fails --
+// and that failure is not pgx.ErrNoRows, so the caller's "this player has no
+// history" branch never fires and every player's FIRST banking command is
+// rejected forever, because being rejected is also what stops them ever getting
+// a ledger row. Ordering by the index returns no row at all for a fresh player,
+// which is what the caller is written to expect.
 func (q *Queries) LastOperationAt(ctx context.Context, alderonID string) (time.Time, error) {
 	row := q.db.QueryRow(ctx, lastOperationAt, alderonID)
-	var column_1 time.Time
-	err := row.Scan(&column_1)
-	return column_1, err
+	var created_at time.Time
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
-const markOperationInFlight = `-- name: MarkOperationInFlight :exec
+const markOperationInFlight = `-- name: MarkOperationInFlight :execrows
 update bank_ledger
    set state   = 'in_flight',
        sent_at = now()
@@ -224,18 +280,27 @@ update bank_ledger
 // MarkOperationInFlight is written BEFORE the RCON command is issued. From
 // here on the outcome is unknown until observed, and the command must never be
 // sent a second time.
-func (q *Queries) MarkOperationInFlight(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, markOperationInFlight, id)
-	return err
+//
+// :execrows because the state guard is the whole point: 0 rows means the row is
+// no longer pending -- the reconciler closed it as failed while this request was
+// stalled -- and the caller MUST abandon the transfer without issuing anything.
+// Sending the command against a row that has already been closed would take a
+// player's marks with nothing left open to record it.
+func (q *Queries) MarkOperationInFlight(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, markOperationInFlight, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const parkForReview = `-- name: ParkForReview :exec
+const parkForReview = `-- name: ParkForReview :execrows
 update bank_ledger
    set state       = 'needs_review',
        error       = $2,
        marks_after = $3,
        resolved_at = now()
- where id = $1
+ where id = $1 and state = 'in_flight'
 `
 
 type ParkForReviewParams struct {
@@ -246,18 +311,30 @@ type ParkForReviewParams struct {
 
 // ParkForReview closes a row whose outcome could not be established. This is
 // the only state a human has to act on, and the only way marks can be wrong.
-func (q *Queries) ParkForReview(ctx context.Context, arg ParkForReviewParams) error {
-	_, err := q.db.Exec(ctx, parkForReview, arg.ID, arg.Error, arg.MarksAfter)
-	return err
+//
+// Guarded like the other terminal transitions: a row is only ever parked
+// because its command MAY have landed, which is the in_flight state and no
+// other, and parking must never overwrite a row somebody else has already
+// resolved. 0 rows means they did.
+func (q *Queries) ParkForReview(ctx context.Context, arg ParkForReviewParams) (int64, error) {
+	result, err := q.db.Exec(ctx, parkForReview, arg.ID, arg.Error, arg.MarksAfter)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const recordVerifyAttempt = `-- name: RecordVerifyAttempt :one
 update bank_ledger
    set verify_attempts = verify_attempts + 1
- where id = $1
+ where id = $1 and state = 'in_flight'
 returning verify_attempts
 `
 
+// RecordVerifyAttempt counts one observation of an unresolved row and doubles as
+// the reconciler's claim on it: the guard means no row is returned once the row
+// has been resolved by the request path or another replica, so no RCON round
+// trip is spent on it and no attempt is charged against a decided row.
 func (q *Queries) RecordVerifyAttempt(ctx context.Context, id int64) (int32, error) {
 	row := q.db.QueryRow(ctx, recordVerifyAttempt, id)
 	var verify_attempts int32

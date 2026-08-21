@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/USA-RedDragon/obsidibot/internal/config"
@@ -98,7 +99,7 @@ func (a *Applier) drain(ctx context.Context) (int, error) {
 // apply lands one event: the stat changes, the rating changes and the "done"
 // mark, all in ONE transaction. A crash partway through must not leave an event
 // half-applied, because the flag is the only record of whether it counted.
-func (a *Applier) apply(ctx context.Context, event gen.KillEvent) error {
+func (a *Applier) apply(ctx context.Context, event gen.NextUnratedEventsRow) error {
 	credited := event.Credited && event.KillerAgid != nil
 
 	err := a.store.InTx(ctx, func(q *gen.Queries) error {
@@ -170,7 +171,7 @@ func (a *Applier) apply(ctx context.Context, event gen.KillEvent) error {
 	}
 
 	if a.metrics != nil {
-		a.metrics.RatingUpdatesTotal.WithLabelValues(boolLabel(credited)).Inc()
+		a.metrics.RatingUpdatesTotal.WithLabelValues(strconv.FormatBool(credited)).Inc()
 	}
 	return nil
 }
@@ -221,10 +222,27 @@ func (d *Decayer) pass(ctx context.Context) error {
 
 	now := time.Now()
 	for _, player := range candidates {
-		// Steps are counted from decayed_at, not from last_seen_at, so a pass
-		// that was missed applies the days it missed and a pass that runs twice
-		// in one day applies none. That is what makes the job resumable.
-		days := int(now.Sub(player.DecayedAt).Hours() / 24)
+		// Steps are counted from decayed_at, so a pass that was missed applies
+		// the days it missed and a pass that runs twice in one day applies
+		// none. That is what makes the job resumable.
+		//
+		// But decayed_at DEFAULTS TO WHEN THE ROW WAS CREATED and only ever
+		// advances here, and this job only ever sees players already past the
+		// grace period. So for an active player it still holds the moment they
+		// were first seen, and the elapsed time since then is their whole
+		// account age -- not the time they have been idle.
+		//
+		// Without the second term, a player first seen a year ago who stops
+		// playing crosses the grace period and loses ~343 rating points in one
+		// hourly tick instead of the ~2 the curve intends. The number on the
+		// board is the thing players argue about, so getting this wrong is
+		// visible and indefensible.
+		sinceStamp := int(now.Sub(player.DecayedAt).Hours() / 24)
+		pastGrace := int(now.Sub(player.LastSeenAt).Hours()/24) - d.cfg.Rating.DecayGraceDays
+		days := min(sinceStamp, pastGrace)
+		if days < 0 {
+			days = 0
+		}
 		// ApplyDecay is issued even when the rating does not move, because it
 		// also stamps decayed_at. Skipping it would leave this player in the
 		// candidate set to be reconsidered every hour forever.
@@ -279,11 +297,4 @@ func (p *Pruner) Run(ctx context.Context) error {
 		case <-time.After(pruneInterval):
 		}
 	}
-}
-
-func boolLabel(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
 }

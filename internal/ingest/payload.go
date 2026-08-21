@@ -44,11 +44,16 @@ type PlayerKilled struct {
 	ServerGUID string `json:"ServerGuid"`
 	DamageType string `json:"DamageType"`
 
-	VictimName          string  `json:"VictimName"`
-	VictimAlderonID     string  `json:"VictimAlderonId"`
-	VictimCharacterName string  `json:"VictimCharacterName"`
+	VictimName      string `json:"VictimName"`
+	VictimAlderonID string `json:"VictimAlderonId"`
+	// The live server sends the victim's character under DinosaurVictimName,
+	// NOT the VictimCharacterName the documentation names -- while the killer's
+	// side really is KillerCharacterName. The asymmetry is the game's, and
+	// binding the documented name here silently yielded an empty string.
+	VictimCharacterName string  `json:"DinosaurVictimName"`
 	VictimDinosaurType  string  `json:"VictimDinosaurType"`
 	VictimGrowth        float64 `json:"VictimGrowth"`
+	VictimRole          string  `json:"VictimRole"`
 	VictimIsAdmin       bool    `json:"VictimIsAdmin"`
 	VictimPOI           string  `json:"VictimPOI"`
 
@@ -57,7 +62,21 @@ type PlayerKilled struct {
 	KillerCharacterName string  `json:"KillerCharacterName"`
 	KillerDinosaurType  string  `json:"KillerDinosaurType"`
 	KillerGrowth        float64 `json:"KillerGrowth"`
+	KillerRole          string  `json:"KillerRole"`
 	KillerIsAdmin       bool    `json:"KillerIsAdmin"`
+
+	// KillDistance is in Unreal units (centimetres); the feed renders metres.
+	// The game reports -1 when there was no killer.
+	KillDistance float64 `json:"KillDistance"`
+
+	// TimeOfDay is the in-world clock: 1411 is 14:11.
+	TimeOfDay int `json:"TimeOfDay"`
+
+	// The coordinates. Captured so the feed can render them WHEN ASKED, behind
+	// killfeed.showLocations, which is off by default. Nothing else in the
+	// codebase may read these -- see the rule in internal/pot's package doc.
+	VictimLocation string `json:"VictimLocation"`
+	KillerLocation string `json:"KillerLocation"`
 }
 
 // Credited reports whether this event gives its killer a rated kill.

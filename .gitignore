@@ -1,3 +1,6 @@
 /obsidibot
 /coverage.out
 /config.yaml
+
+# Agent scratch worktrees
+/.claude/

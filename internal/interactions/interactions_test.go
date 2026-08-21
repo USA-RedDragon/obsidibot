@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -437,12 +440,6 @@ func TestNonCommandInteractionsAreRejected(t *testing.T) {
 	}
 }
 
-func TestErrNoGuildIsComparable(t *testing.T) {
-	if !errors.Is(interactions.ErrNoGuild, interactions.ErrNoGuild) {
-		t.Fatal("ErrNoGuild is not comparable with errors.Is")
-	}
-}
-
 // TestDeferredReplyIsDelivered covers the second half of the deferred path:
 // the ACK proves Discord will wait, this proves the answer actually arrives.
 func TestDeferredReplyIsDelivered(t *testing.T) {
@@ -709,4 +706,192 @@ func TestDiscoverGuild(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestDeferredPanicStillAnswers: a panicking command must still land an edit.
+//
+// The ACK is already out by the time a handler runs, so a recover that only
+// logs leaves the caller watching "thinking" until Discord gives up -- and
+// leaves nothing on a dashboard to say it happened. The rule this package holds
+// to everywhere else is that an edit ALWAYS lands.
+func TestDeferredPanicStillAnswers(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	editor := newFakeEditor()
+	m := metrics.New()
+	router, err := interactions.NewRouter(hex.EncodeToString(pub), editor, m, []interactions.Command{{
+		Definition: &discordgo.ApplicationCommand{Name: "boom", Description: "t"},
+		Defer:      true,
+		Handler: func(context.Context, interactions.Context) (interactions.Reply, error) {
+			var p *discordgo.User
+			_ = p.ID // deliberate nil dereference
+			return interactions.Reply{}, nil
+		},
+	}})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, signed(t, priv, commandBody(t, "boom", nil)))
+
+	select {
+	case <-editor.edited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a panicking command never edited its reply; the caller is still thinking")
+	}
+	edit := editor.last()
+	if edit == nil || edit.Content == nil || *edit.Content == "" {
+		t.Fatal("the edit carried no content")
+	}
+	if !strings.Contains(*edit.Content, "went wrong") {
+		t.Errorf("edit content %q is not the standard failure message", *edit.Content)
+	}
+
+	// And it is counted as a failure, so a command that panics on every call is
+	// visible as one rather than as a gap in the graph.
+	if got := counterValue(t, m, "boom", metrics.ResultError); got != 1 {
+		t.Errorf("interactions_total{command=boom,result=error} = %v, want 1", got)
+	}
+}
+
+// counterValue reads one obsidibot_interactions_total sample off the private
+// registry, which is the only place these collectors live.
+//
+// The registry exposes the Prometheus TEXT format rather than protobuf structs,
+// so this parses the one line it wants: the sample name with its label pair, in
+// the canonical order the exposition writer emits.
+func counterValue(t *testing.T, m *metrics.Metrics, command, result string) float64 {
+	t.Helper()
+	want := fmt.Sprintf(`obsidibot_interactions_total{command="%s",result="%s"} `, command, result)
+	for _, line := range strings.Split(string(m.Registry.Gather()), "\n") {
+		value, found := strings.CutPrefix(line, want)
+		if !found {
+			continue
+		}
+		got, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			t.Fatalf("unreadable sample %q: %v", line, err)
+		}
+		return got
+	}
+	return 0
+}
+
+// TestShutdownWaitsForDeferredCommands is the rolling-deploy bug.
+//
+// http.Server.Shutdown drains ACTIVE requests, and a deferred command has none:
+// its ACK went out immediately and the connection went idle, so Shutdown
+// returned while the work -- a banking transfer, in the case that hurt -- was
+// still running, and the caller then closed the database under it. Serve must
+// not return until the deferred goroutines it started have finished.
+func TestShutdownWaitsForDeferredCommands(t *testing.T) {
+	release := make(chan struct{})
+	var finished atomic.Bool
+	router, priv, editor := newRouterWithEditor(t, []interactions.Command{{
+		Definition: &discordgo.ApplicationCommand{Name: "slow", Description: "t"},
+		Defer:      true,
+		Handler: func(context.Context, interactions.Context) (interactions.Reply, error) {
+			<-release
+			finished.Store(true)
+			return interactions.Reply{Content: "done"}, nil
+		},
+	}})
+
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	served := make(chan error, 1)
+	go func() {
+		served <- router.Serve(ctx, "127.0.0.1", port, func(context.Context) error { return nil })
+	}()
+	waitForHealth(t, fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+
+	body := commandBody(t, "slow", nil)
+	sig := ed25519.Sign(priv, append([]byte(signTimestamp), body...))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		fmt.Sprintf("http://127.0.0.1:%d/", port), strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("X-Signature-Ed25519", hex.EncodeToString(sig))
+	req.Header.Set("X-Signature-Timestamp", signTimestamp)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post interaction: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the ACK did not go out: status %d", resp.StatusCode)
+	}
+
+	// SIGTERM lands while the command is still working.
+	cancel()
+	select {
+	case err := <-served:
+		t.Fatalf("Serve returned (%v) while a deferred command was still running", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve never returned after the deferred command finished")
+	}
+
+	if !finished.Load() {
+		t.Error("the deferred command did not finish")
+	}
+	// The reply had to be delivered BEFORE Serve returned: everything the
+	// caller tears down afterwards -- the database above all -- is gone by then.
+	if edit := editor.last(); edit == nil || edit.Content == nil || *edit.Content != "done" {
+		t.Error("the deferred reply was not delivered before shutdown completed")
+	}
+}
+
+// freePort picks a port nothing is listening on, so these tests can run beside
+// anything else on the machine.
+func freePort(t *testing.T) int {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a port: %v", err)
+	}
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = ln.Close()
+		t.Fatalf("listener reported a %T, want a TCP address", ln.Addr())
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release the reserved port: %v", err)
+	}
+	return addr.Port
+}
+
+func waitForHealth(t *testing.T, url string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s never came up", url)
 }

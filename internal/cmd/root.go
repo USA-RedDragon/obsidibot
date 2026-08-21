@@ -84,29 +84,45 @@ func run(cmd *cobra.Command, migrations fs.FS) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	var logger *slog.Logger
-	switch cfg.LogLevel {
-	case config.LogLevelDebug:
-		logger = slog.New(tint.NewTextHandler(os.Stdout, &tint.Options{Level: slog.LevelDebug}))
-	case config.LogLevelInfo:
-		logger = slog.New(tint.NewTextHandler(os.Stdout, &tint.Options{Level: slog.LevelInfo}))
-	case config.LogLevelWarn:
-		logger = slog.New(tint.NewTextHandler(os.Stderr, &tint.Options{Level: slog.LevelWarn}))
-	case config.LogLevelError:
-		logger = slog.New(tint.NewTextHandler(os.Stderr, &tint.Options{Level: slog.LevelError}))
-	}
-	slog.SetDefault(logger)
+	// configulator.Load already ran cfg.Validate, so an out-of-range logLevel
+	// has been refused before this line -- which is what keeps the logger built
+	// from a value the switch below actually knows. Calling Validate again here
+	// would only repeat that; newLogger carries the fallback instead, because
+	// the failure mode of getting this order wrong is a nil logger and a panic
+	// inside slog.SetDefault rather than the configuration error the operator
+	// should have seen.
+	slog.SetDefault(newLogger(cfg.LogLevel))
 
 	slog.Info("obsidibot", "version", cmd.Annotations["version"], "commit", cmd.Annotations["commit"])
-
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	return serve(ctx, cfg, migrations)
+}
+
+// newLogger builds the process logger for a log level.
+//
+// The default arm is not dead code waiting for a validation gap: it is what
+// keeps a level this function does not recognise from producing a NIL logger,
+// which slog.SetDefault dereferences on the spot. Falling back to info means a
+// mistake here costs verbosity rather than the process, and the level is
+// reported so the fallback is not silent.
+func newLogger(level config.LogLevel) *slog.Logger {
+	switch level {
+	case config.LogLevelDebug:
+		return slog.New(tint.NewTextHandler(os.Stdout, &tint.Options{Level: slog.LevelDebug}))
+	case config.LogLevelInfo:
+		return slog.New(tint.NewTextHandler(os.Stdout, &tint.Options{Level: slog.LevelInfo}))
+	case config.LogLevelWarn:
+		return slog.New(tint.NewTextHandler(os.Stderr, &tint.Options{Level: slog.LevelWarn}))
+	case config.LogLevelError:
+		return slog.New(tint.NewTextHandler(os.Stderr, &tint.Options{Level: slog.LevelError}))
+	default:
+		logger := slog.New(tint.NewTextHandler(os.Stdout, &tint.Options{Level: slog.LevelInfo}))
+		logger.Warn("unknown logLevel, falling back to info", "logLevel", string(level))
+		return logger
+	}
 }
 
 // Option adjusts how Serve builds its dependencies.
@@ -136,12 +152,11 @@ func Serve(ctx context.Context, configPath string, migrations fs.FS, opts ...Opt
 		WithEnvironmentVariables(&configulator.EnvironmentVariableOptions{Separator: "_"}).
 		WithFile(&configulator.FileOptions{Paths: []string{configPath}})
 
+	// Load validates before it returns -- configulator calls Config.Validate
+	// itself -- so a bad file is refused here, with every problem at once.
 	cfg, err := c.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
-	}
-	if err := cfg.Validate(); err != nil {
-		return err
 	}
 	return serve(ctx, cfg, migrations, opts...)
 }
@@ -161,10 +176,14 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 	// a metric into this endpoint from a package we did not wire up here.
 	m := metrics.New()
 
-	store, err := db.Connect(ctx, cfg.Database.DSN())
+	store, err := db.Connect(ctx, cfg.Database.DSN(), cfg.Database.MaxConns)
 	if err != nil {
 		return err
 	}
+	// Closed LAST, after group.Wait below: the interactions listener does not
+	// return until the deferred commands it started have finished, and those
+	// are still writing through this pool. Closing it any earlier turns a
+	// completed banking transfer into a ledger row nobody managed to settle.
 	defer store.Close()
 
 	// Migrations run before anything serves. Every replica calls this on every
@@ -220,6 +239,25 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 		return err
 	}
 
+	// Single-writer background jobs. Each holds its own advisory lock, so N
+	// replicas can run and exactly one does each job. The rating applier is the
+	// strict case -- Elo is order-dependent -- and the rest would merely
+	// duplicate work or fight over one message.
+	//
+	// Built BEFORE anything is started so the capacity check below can refuse
+	// to boot without having to unwind half a running process.
+	singletons := map[string]leader.Job{
+		"cmdreg":   registerCommands(session, router, cfg.Discord.ApplicationID, self.guildID),
+		"ratings":  kills.NewApplier(store, m, cfg).Run,
+		"killfeed": kills.NewFeed(store, session, m, cfg, self.guildID).Run,
+		"leaderbd": board.New(store, session, m, cfg, self.guildID).Run,
+		"decay":    kills.NewDecayer(store, cfg).Run,
+		"prune":    kills.NewPruner(store, cfg).Run,
+	}
+	if err := checkPoolCapacity(store.MaxConns(), len(singletons)); err != nil {
+		return err
+	}
+
 	group, ctx := errgroup.WithContext(ctx)
 
 	// Listeners. Interactions and ingest are always on; their deliberately
@@ -250,20 +288,13 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 		})
 	}
 
-	// Single-writer background jobs. Each holds its own advisory lock, so N
-	// replicas can run and exactly one does each job. The rating applier is the
-	// strict case -- Elo is order-dependent -- and the rest would merely
-	// duplicate work or fight over one message.
-	singletons := map[string]leader.Job{
-		"cmdreg":   registerCommands(session, router, cfg.Discord.ApplicationID, self.guildID),
-		"ratings":  kills.NewApplier(store, m, cfg).Run,
-		"killfeed": kills.NewFeed(store, session, m, cfg, self.guildID).Run,
-		"leaderbd": board.New(store, session, m, cfg, self.guildID).Run,
-		"decay":    kills.NewDecayer(store, cfg).Run,
-		"prune":    kills.NewPruner(store, cfg).Run,
-	}
+	// Each runner opens its OWN connection for the lock rather than borrowing
+	// one from the pool: the lock is a session lock held for the whole life of
+	// the process, so a pooled connection would never come back and the pool
+	// would shrink by one per job held. See internal/leader.
+	dial := leader.DialConfig(store.ConnConfig())
 	for name, job := range singletons {
-		runner := leader.New(store.Pool(), name, leaderRetry, func(job string) {
+		runner := leader.New(dial, name, leaderRetry, func(job string) {
 			m.LeaderTransitionsTotal.WithLabelValues(job).Inc()
 		})
 		group.Go(func() error { return runner.Run(ctx, job) })
@@ -312,6 +343,31 @@ func discoverIdentity(ctx context.Context, session *discordgo.Session, game *pot
 	slog.InfoContext(ctx, "discovered the game server", "server", info.Name, "serverGuid", info.GUID)
 
 	return identity{guildID: guild.ID, serverGUID: info.GUID}, nil
+}
+
+// poolHeadroom is how many pooled connections must remain free once every
+// singleton job is running: one for the interaction being answered, one for the
+// kill webhook that arrives while it is, one for /readyz, and one spare so a
+// slow query does not make those three queue behind each other.
+const poolHeadroom = 4
+
+// checkPoolCapacity refuses to boot with a pool too small to serve the jobs and
+// the traffic at the same time.
+//
+// The jobs no longer hold a pooled connection for the lock -- that is what
+// internal/leader's dedicated connection is for -- but each of them still reads
+// and writes through the pool while it runs, concurrently with every
+// interaction, webhook and probe. A pool that only just covers the jobs
+// therefore does not fail: it makes every request wait in Acquire until its
+// deadline, which reads as Discord timing out and readiness flapping rather
+// than as a configuration mistake. Refusing at startup makes it say so.
+func checkPoolCapacity(maxConns, jobs int) error {
+	if want := jobs + poolHeadroom; maxConns < want {
+		return fmt.Errorf(
+			"database.maxConns %d is too small for %d background jobs: use at least %d, or the pool starves interactions",
+			maxConns, jobs, want)
+	}
+	return nil
 }
 
 // leaderRetry is how long a replica waits before contesting a job's lock again.

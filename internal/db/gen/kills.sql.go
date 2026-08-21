@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"time"
 )
 
 const countUnpostedEvents = `-- name: CountUnpostedEvents :one
@@ -35,35 +36,48 @@ const insertKillEvent = `-- name: InsertKillEvent :one
 insert into kill_events (
     dedupe_key, server_guid, payload,
     victim_agid, victim_name, victim_dino, victim_growth, victim_poi,
+    victim_character, victim_role, victim_location, victim_is_admin,
     killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin,
-    damage_type, credited, counts_death
+    killer_character, killer_role, killer_location,
+    damage_type, credited, counts_death, kill_distance, time_of_day
 ) values (
     $1, $2, $3,
     $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13,
-    $14, $15, $16
+    $9, $10, $11, $12,
+    $13, $14, $15, $16, $17,
+    $18, $19, $20,
+    $21, $22, $23, $24, $25
 )
 on conflict (dedupe_key) do nothing
 returning id
 `
 
 type InsertKillEventParams struct {
-	DedupeKey     []byte
-	ServerGuid    string
-	Payload       []byte
-	VictimAgid    string
-	VictimName    string
-	VictimDino    *string
-	VictimGrowth  *float64
-	VictimPoi     *string
-	KillerAgid    *string
-	KillerName    *string
-	KillerDino    *string
-	KillerGrowth  *float64
-	KillerIsAdmin bool
-	DamageType    string
-	Credited      bool
-	CountsDeath   bool
+	DedupeKey       []byte
+	ServerGuid      string
+	Payload         []byte
+	VictimAgid      string
+	VictimName      string
+	VictimDino      *string
+	VictimGrowth    *float64
+	VictimPoi       *string
+	VictimCharacter *string
+	VictimRole      *string
+	VictimLocation  *string
+	VictimIsAdmin   bool
+	KillerAgid      *string
+	KillerName      *string
+	KillerDino      *string
+	KillerGrowth    *float64
+	KillerIsAdmin   bool
+	KillerCharacter *string
+	KillerRole      *string
+	KillerLocation  *string
+	DamageType      string
+	Credited        bool
+	CountsDeath     bool
+	KillDistance    *float64
+	TimeOfDay       *int32
 }
 
 // InsertKillEvent is the only write the ingest endpoint makes. A repeat
@@ -79,14 +93,23 @@ func (q *Queries) InsertKillEvent(ctx context.Context, arg InsertKillEventParams
 		arg.VictimDino,
 		arg.VictimGrowth,
 		arg.VictimPoi,
+		arg.VictimCharacter,
+		arg.VictimRole,
+		arg.VictimLocation,
+		arg.VictimIsAdmin,
 		arg.KillerAgid,
 		arg.KillerName,
 		arg.KillerDino,
 		arg.KillerGrowth,
 		arg.KillerIsAdmin,
+		arg.KillerCharacter,
+		arg.KillerRole,
+		arg.KillerLocation,
 		arg.DamageType,
 		arg.Credited,
 		arg.CountsDeath,
+		arg.KillDistance,
+		arg.TimeOfDay,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -112,40 +135,86 @@ func (q *Queries) MarkEventRated(ctx context.Context, id int64) error {
 }
 
 const nextUnpostedEvents = `-- name: NextUnpostedEvents :many
-select id, received_at, dedupe_key, server_guid, payload, victim_agid, victim_name, victim_dino, victim_growth, victim_poi, killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin, damage_type, credited, counts_death, rated, posted from kill_events
+select id, received_at, server_guid,
+       victim_agid, victim_name, victim_dino, victim_growth, victim_poi,
+       victim_character, victim_role, victim_location, victim_is_admin, victim_is_admin,
+       killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin,
+       killer_character, killer_role, killer_location,
+       damage_type, credited, counts_death, kill_distance, time_of_day,
+       rated, posted
+  from kill_events
  where not posted
  order by id
  limit $1
 `
 
-func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]KillEvent, error) {
+type NextUnpostedEventsRow struct {
+	ID              int64
+	ReceivedAt      time.Time
+	ServerGuid      string
+	VictimAgid      string
+	VictimName      string
+	VictimDino      *string
+	VictimGrowth    *float64
+	VictimPoi       *string
+	VictimCharacter *string
+	VictimRole      *string
+	VictimLocation  *string
+	VictimIsAdmin   bool
+	VictimIsAdmin_2 bool
+	KillerAgid      *string
+	KillerName      *string
+	KillerDino      *string
+	KillerGrowth    *float64
+	KillerIsAdmin   bool
+	KillerCharacter *string
+	KillerRole      *string
+	KillerLocation  *string
+	DamageType      string
+	Credited        bool
+	CountsDeath     bool
+	KillDistance    *float64
+	TimeOfDay       *int32
+	Rated           bool
+	Posted          bool
+}
+
+func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]NextUnpostedEventsRow, error) {
 	rows, err := q.db.Query(ctx, nextUnpostedEvents, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []KillEvent
+	var items []NextUnpostedEventsRow
 	for rows.Next() {
-		var i KillEvent
+		var i NextUnpostedEventsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ReceivedAt,
-			&i.DedupeKey,
 			&i.ServerGuid,
-			&i.Payload,
 			&i.VictimAgid,
 			&i.VictimName,
 			&i.VictimDino,
 			&i.VictimGrowth,
 			&i.VictimPoi,
+			&i.VictimCharacter,
+			&i.VictimRole,
+			&i.VictimLocation,
+			&i.VictimIsAdmin,
+			&i.VictimIsAdmin_2,
 			&i.KillerAgid,
 			&i.KillerName,
 			&i.KillerDino,
 			&i.KillerGrowth,
 			&i.KillerIsAdmin,
+			&i.KillerCharacter,
+			&i.KillerRole,
+			&i.KillerLocation,
 			&i.DamageType,
 			&i.Credited,
 			&i.CountsDeath,
+			&i.KillDistance,
+			&i.TimeOfDay,
 			&i.Rated,
 			&i.Posted,
 		); err != nil {
@@ -160,42 +229,91 @@ func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]KillEv
 }
 
 const nextUnratedEvents = `-- name: NextUnratedEvents :many
-select id, received_at, dedupe_key, server_guid, payload, victim_agid, victim_name, victim_dino, victim_growth, victim_poi, killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin, damage_type, credited, counts_death, rated, posted from kill_events
+select id, received_at, server_guid,
+       victim_agid, victim_name, victim_dino, victim_growth, victim_poi,
+       victim_character, victim_role, victim_location, victim_is_admin, victim_is_admin,
+       killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin,
+       killer_character, killer_role, killer_location,
+       damage_type, credited, counts_death, kill_distance, time_of_day,
+       rated, posted
+  from kill_events
  where not rated
  order by id
  limit $1
 `
 
+type NextUnratedEventsRow struct {
+	ID              int64
+	ReceivedAt      time.Time
+	ServerGuid      string
+	VictimAgid      string
+	VictimName      string
+	VictimDino      *string
+	VictimGrowth    *float64
+	VictimPoi       *string
+	VictimCharacter *string
+	VictimRole      *string
+	VictimLocation  *string
+	VictimIsAdmin   bool
+	VictimIsAdmin_2 bool
+	KillerAgid      *string
+	KillerName      *string
+	KillerDino      *string
+	KillerGrowth    *float64
+	KillerIsAdmin   bool
+	KillerCharacter *string
+	KillerRole      *string
+	KillerLocation  *string
+	DamageType      string
+	Credited        bool
+	CountsDeath     bool
+	KillDistance    *float64
+	TimeOfDay       *int32
+	Rated           bool
+	Posted          bool
+}
+
 // NextUnratedEvents walks the queue in id order, which IS the rating order.
 // Elo is order-dependent, so this must never be parallelised across rows.
-func (q *Queries) NextUnratedEvents(ctx context.Context, limit int32) ([]KillEvent, error) {
+// The payload and dedupe_key columns are deliberately NOT selected: neither
+// worker reads them, and the payload is the whole raw webhook. Shipping it 200
+// rows at a time cost 440 KB per pass against 208 KB for this projection.
+func (q *Queries) NextUnratedEvents(ctx context.Context, limit int32) ([]NextUnratedEventsRow, error) {
 	rows, err := q.db.Query(ctx, nextUnratedEvents, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []KillEvent
+	var items []NextUnratedEventsRow
 	for rows.Next() {
-		var i KillEvent
+		var i NextUnratedEventsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.ReceivedAt,
-			&i.DedupeKey,
 			&i.ServerGuid,
-			&i.Payload,
 			&i.VictimAgid,
 			&i.VictimName,
 			&i.VictimDino,
 			&i.VictimGrowth,
 			&i.VictimPoi,
+			&i.VictimCharacter,
+			&i.VictimRole,
+			&i.VictimLocation,
+			&i.VictimIsAdmin,
+			&i.VictimIsAdmin_2,
 			&i.KillerAgid,
 			&i.KillerName,
 			&i.KillerDino,
 			&i.KillerGrowth,
 			&i.KillerIsAdmin,
+			&i.KillerCharacter,
+			&i.KillerRole,
+			&i.KillerLocation,
 			&i.DamageType,
 			&i.Credited,
 			&i.CountsDeath,
+			&i.KillDistance,
+			&i.TimeOfDay,
 			&i.Rated,
 			&i.Posted,
 		); err != nil {

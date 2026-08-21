@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -26,15 +22,6 @@ const (
 	bob   = "222-222-222"
 	carol = "333-333-333"
 )
-
-func migrationsFS(t *testing.T) fs.FS {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
-}
 
 func testConfig() *config.Config {
 	return &config.Config{
@@ -58,7 +45,7 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return &harness{pool: pool, store: db.NewStore(pool), cfg: testConfig()}
@@ -437,5 +424,51 @@ func TestPrunerKeepsUnprocessedEvents(t *testing.T) {
 	// And the stats they produced are untouched.
 	if killer := h.player(t, alice); killer.Kills != 1 {
 		t.Errorf("pruning destroyed a stat: alice has %d kills", killer.Kills)
+	}
+}
+
+// TestDecayOnlyAppliesDaysPastTheGracePeriod is the regression test for a bug
+// that would have been very visible on the board.
+//
+// players.decayed_at defaults to when the row was created and only advances in
+// the decay job, which only ever sees players ALREADY past the grace period. So
+// for a long-active player it still holds the moment they were first seen, and
+// naively counting from it applies their whole ACCOUNT AGE in one tick: a
+// year-old 1800 dropping to ~1255 the first hour they qualify, instead of the
+// ~1798 one day of decay intends.
+func TestDecayOnlyAppliesDaysPastTheGracePeriod(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.runApplier(t)
+
+	// A year-old account, rated 1800, that went idle just over the grace
+	// period ago -- and whose decayed_at still points at creation.
+	idle := h.cfg.Rating.DecayGraceDays + 1
+	if _, err := h.pool.Exec(ctx, `update players
+		set rating = 1800,
+		    last_seen_at = now() - make_interval(days => $2),
+		    decayed_at   = now() - interval '365 days'
+		where alderon_id = $1`, alice, idle); err != nil {
+		t.Fatalf("age player: %v", err)
+	}
+
+	decayer := kills.NewDecayer(h.store, h.cfg)
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	done := make(chan error, 1)
+	go func() { done <- decayer.Run(runCtx) }()
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("decayer: %v", err)
+	}
+
+	got := h.player(t, alice).Rating
+	// One day past grace: 0.995 of the 600-point gap, so ~1797.
+	want := rating.Decay(1800, 1, h.cfg.Rating)
+	if diff := got - want; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("rating decayed to %.1f after one day past grace, want %.1f "+
+			"(a whole account age was applied in one pass)", got, want)
 	}
 }

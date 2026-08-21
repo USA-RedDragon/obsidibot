@@ -3,11 +3,7 @@ package commands_test
 import (
 	"context"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -22,9 +18,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// fakeRCON stands in for the game server. It answers with the real response
-// response strings, with player identifiers anonymised, so the parsing under
-// test is the parsing that runs in production.
+// fakeRCON stands in for the game server. It answers with real response
+// strings, with player identifiers anonymised, so the parsing under test is the
+// parsing that runs in production.
 type fakeRCON struct {
 	mu       sync.Mutex
 	commands []string
@@ -173,22 +169,13 @@ func testConfig() *config.Config {
 			ProvisionalGames: 20, SettlingGames: 50,
 			DecayGraceDays: 30, DecayPermillePerDay: 5,
 		},
-		Bank: config.Bank{CooldownSeconds: 0, VerifyAttempts: 5, VerifyBackoffSeconds: 1},
+		Bank: config.Bank{CooldownSeconds: 0, VerifyAttempts: 5},
 		Link: config.Link{
 			CodeTTLSeconds: 300, MaxAttempts: 5, ReissueCooldownSeconds: 30,
 		},
 		Leaderboard: config.Leaderboard{IntervalSeconds: 60, Size: 20},
 		KillFeed:    config.KillFeed{RetentionDays: 30},
 	}
-}
-
-func migrationsFS(t *testing.T) fs.FS {
-	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate this test file")
-	}
-	return os.DirFS(filepath.Join(filepath.Dir(thisFile), "..", "..", "schema", "migrations"))
 }
 
 type linkHarness struct {
@@ -204,7 +191,7 @@ func newLinkHarness(t *testing.T) *linkHarness {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
-	if err := db.Migrate(context.Background(), pool, migrationsFS(t)); err != nil {
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := db.NewStore(pool)

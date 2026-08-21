@@ -19,7 +19,6 @@ import (
 const (
 	liveSinglePlayer = `(PlayerInfo 555-000-101): Name: testplayer / AGID: 555-000-101 / Dinosaur: Ceratosaurus / Role: Owner / Marks: 3838 / Growth: 1 / Location: (X=104037.330 Y=169175.200 Z=-596.830)`
 	liveNotOnline    = `(PlayerInfo 000-000-000): No player with the username '000-000-000'.`
-	liveAll          = "(PlayerInfoAll): Total Players: 1. \nName: testplayer / AGID: 555-000-101 / Dinosaur: Ceratosaurus / Role: Owner / Marks: 3838 / Growth: 1 / Location: (X=104037.330 Y=169175.200 Z=-596.830)"
 
 	// The marks commands answer with what they did and the resulting balance.
 	liveAddMarks    = `(AddMarks 555-000-101 100): Added 100 Marks to 555-000-101. They now have 3938 Marks.`
@@ -105,27 +104,6 @@ func TestParsePlayerInfoRefusesGarbage(t *testing.T) {
 	}
 }
 
-func TestParsePlayerInfoAll(t *testing.T) {
-	players, total, failures := pot.ParsePlayerInfoAll(liveAll)
-	if len(players) != 1 || total != 1 || failures != 0 {
-		t.Fatalf("got %d players, total %d, %d failures; want 1, 1, 0", len(players), total, failures)
-	}
-	// The integrity check the exporter documents: parsed and reported must
-	// agree, or the response was truncated.
-	if len(players) != total {
-		t.Errorf("parsed %d but the server reported %d", len(players), total)
-	}
-
-	empty, total, _ := pot.ParsePlayerInfoAll("(PlayerInfoAll): Total Players: 0. ")
-	if len(empty) != 0 || total != 0 {
-		t.Errorf("empty server: %d players, total %d", len(empty), total)
-	}
-	// "the server did not say" must stay distinguishable from "the server said zero".
-	if _, missing, _ := pot.ParsePlayerInfoAll("nothing useful"); missing != pot.NoReportedTotal {
-		t.Errorf("a response with no header reported total %d, want NoReportedTotal", missing)
-	}
-}
-
 // fakeExec records the command it was given and replays a canned response.
 type fakeExec struct {
 	commands []string
@@ -187,14 +165,6 @@ func TestIdentifierAcceptsRealValues(t *testing.T) {
 	for _, ident := range []string{"555-000-101", "testplayer", "Player.One", "a_b-c.1"} {
 		if !pot.ValidIdentifier(ident) {
 			t.Errorf("ValidIdentifier(%q) = false, want true", ident)
-		}
-	}
-	if !pot.IsAGID("555-000-101") {
-		t.Error("IsAGID rejected a real Alderon ID")
-	}
-	for _, notAGID := range []string{"testplayer", "74-132-258", "555-000-1018", "746132258"} {
-		if pot.IsAGID(notAGID) {
-			t.Errorf("IsAGID(%q) = true", notAGID)
 		}
 	}
 }
