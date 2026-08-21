@@ -18,7 +18,7 @@ var (
 )
 
 func main() {
-	rootCmd := cmd.New(version, commit)
+	rootCmd := cmd.New(version, commit, migrations())
 
 	c := configulator.New[config.Config]().
 		WithEnvironmentVariables(&configulator.EnvironmentVariableOptions{
