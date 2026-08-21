@@ -170,8 +170,19 @@ jobs:
         run: |
           env CGO_ENABLED=0 go test -v ./... -coverprofile coverage.out -coverpkg=./... -covermode atomic
 
+      - name: Generate GitHub App Token
+        if: always()
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AUTO_COMMIT_APP_ID }}
+          private-key: ${{ secrets.AUTO_COMMIT_APP_KEY }}
+
       - name: Report coverage
         if: always()
         uses: USA-RedDragon/reusable-actions/coverage@d65722ccb9ea7d4e4b770754a67aecc037033f1b # v2.0.21
         with:
           file: coverage.out
+          token: ${{ steps.app-token.outputs.token }}
+          git-user-name: usa-reddragon-auto-commit-bot[bot]
+          git-user-email: usa-reddragon-auto-commit-bot[bot]@users.noreply.github.com
