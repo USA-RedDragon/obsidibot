@@ -1,6 +1,6 @@
 # obsidibot
 
-[![Release](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml) [![License](https://badgen.net/github/license/USA-RedDragon/obsidibot)](https://github.com/USA-RedDragon/obsidibot/blob/main/LICENSE)
+[![Release](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml) [![License](https://badgen.net/github/license/USA-RedDragon/obsidibot)](https://github.com/USA-RedDragon/obsidibot/blob/main/LICENSE) [![Version](https://img.shields.io/github/release/USA-RedDragon/obsidibot.svg)](https://github.com/USA-RedDragon/obsidibot/releases/) [![Coverage](.github/badges/coverage.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/test.yaml)
 
 Discord bot for the **Obsidian Wilds** Path of Titans server.
 
