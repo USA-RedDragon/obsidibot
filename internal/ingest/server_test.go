@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/USA-RedDragon/obsidibot/internal/config"
 	"github.com/USA-RedDragon/obsidibot/internal/db"
 	"github.com/USA-RedDragon/obsidibot/internal/dbtest"
+	"github.com/USA-RedDragon/obsidibot/internal/gamecmd"
 	"github.com/USA-RedDragon/obsidibot/internal/ingest"
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,11 +23,22 @@ import (
 const (
 	testSecret     = "0123456789abcdef0123456789abcdef"
 	testServerGUID = "63a86971-0cb9-4569-a43a-4b05317f2d73"
+	// testAGID is the Alderon ID the recorded payloads in this package carry.
+	testAGID = "048-236-424"
 )
 
 // serve builds the ingest handler on a real database and returns a client for
 // it. The route carries the secret, so this exercises the real path matching.
 func serve(t *testing.T) (*httptest.Server, *db.Store, *pgxpool.Pool) {
+	t.Helper()
+	return serveWith(t, &commandRecorder{}, metrics.New())
+}
+
+// serveWith is serve with the command dispatcher named, so the command route's
+// tests can see what was handed to it.
+func serveWith(t *testing.T, commands ingest.Commands, m *metrics.Metrics) (
+	*httptest.Server, *db.Store, *pgxpool.Pool,
+) {
 	t.Helper()
 	pool := dbtest.Pool(t)
 	dbtest.Reset(t, pool)
@@ -38,9 +52,60 @@ func serve(t *testing.T) (*httptest.Server, *db.Store, *pgxpool.Pool) {
 		Rating: config.Rating{Initial: 1200},
 	}
 
-	ts := httptest.NewServer(ingest.New(store, metrics.New(), cfg, testServerGUID).Handler())
+	ts := httptest.NewServer(ingest.New(store, m, cfg, testServerGUID, commands).Handler())
 	t.Cleanup(ts.Close)
 	return ts, store, pool
+}
+
+// commandRecorder stands in for the dispatcher: it records what the route
+// handed over instead of reaching a database, RCON and a bank, so these tests
+// are about the ROUTE -- what it accepts, what it refuses, and what it passes
+// on -- and nothing else.
+type commandRecorder struct {
+	mu       sync.Mutex
+	received []gamecmd.Incoming
+}
+
+func (c *commandRecorder) Dispatch(_ context.Context, in gamecmd.Incoming) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.received = append(c.received, in)
+}
+
+func (c *commandRecorder) Wait(context.Context) error { return nil }
+
+func (c *commandRecorder) Budget() time.Duration { return time.Second }
+
+func (c *commandRecorder) all() []gamecmd.Incoming {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]gamecmd.Incoming(nil), c.received...)
+}
+
+// postCommand delivers a PlayerCommand webhook.
+func postCommand(t *testing.T, ts *httptest.Server, secret, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		fmt.Sprintf("%s/webhooks/pot/%s/command", ts.URL, secret), strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+// commandBody is a real PlayerCommand delivery. The game reuses its chat
+// payload for these, so the fields it carries and does not carry are the chat
+// ones -- and the Message arrives WITH its prefix.
+func commandBody(guid, message string) string {
+	return fmt.Sprintf(`{"ServerGuid":%q,"ChannelId":0,"ChannelName":"Global",
+		"PlayerName":"testplayer","AlderonId":%q,"Message":%q,
+		"bServerAdmin":false,"FromWhisper":false}`, guid, testAGID, message)
 }
 
 func post(t *testing.T, ts *httptest.Server, secret, body string) *http.Response {
@@ -106,7 +171,7 @@ func TestCorrectSecretRecordsTheEvent(t *testing.T) {
 		t.Fatalf("read events: %v", err)
 	}
 	event := events[0]
-	if event.VictimAgid != "048-236-424" || *event.KillerAgid != "123-430-121" {
+	if event.VictimAgid != testAGID || *event.KillerAgid != "123-430-121" {
 		t.Errorf("ids stored wrong: %q / %v", event.VictimAgid, event.KillerAgid)
 	}
 	if !event.Credited {
@@ -213,7 +278,7 @@ func TestEnvironmentalDeathIsRecordedAsUncredited(t *testing.T) {
 	ts, store, _ := serve(t)
 
 	body := `{"ServerGuid":"` + testServerGUID + `","DamageType":"DT_THIRST",` +
-		`"VictimName":"Test1","VictimAlderonId":"048-236-424","VictimDinosaurType":"Dilophosaurus",` +
+		`"VictimName":"Test1","VictimAlderonId":"` + testAGID + `","VictimDinosaurType":"Dilophosaurus",` +
 		`"VictimGrowth":0.5,"KillerAlderonId":"","KillerName":""}`
 	if resp := post(t, ts, testSecret, body); resp.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", resp.StatusCode)
@@ -238,4 +303,165 @@ func TestEnvironmentalDeathIsRecordedAsUncredited(t *testing.T) {
 	if events[0].KillerGrowth != nil {
 		t.Error("an environmental death stored a killer growth of 0 instead of NULL")
 	}
+}
+
+// TestCommandRouteAcceptsADelivery is the happy path: the fields the
+// dispatcher needs arrive intact, INCLUDING the message's prefix, which the
+// parser needs because the escape character is server configuration.
+func TestCommandRouteAcceptsADelivery(t *testing.T) {
+	rec := &commandRecorder{}
+	ts, _, _ := serveWith(t, rec, metrics.New())
+
+	resp := postCommand(t, ts, testSecret, commandBody(testServerGUID, "!deposit 1,000"))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+
+	got := rec.all()
+	if len(got) != 1 {
+		t.Fatalf("%d commands dispatched, want 1", len(got))
+	}
+	if got[0].AGID != testAGID {
+		t.Errorf("agid = %q", got[0].AGID)
+	}
+	if got[0].PlayerName != "testplayer" {
+		t.Errorf("player name = %q", got[0].PlayerName)
+	}
+	if got[0].Message != "!deposit 1,000" {
+		t.Errorf("message = %q, want the prefix kept", got[0].Message)
+	}
+}
+
+// TestCommandRouteRefusesTheWrongSecret: the secret in the path is this
+// endpoint's only credential, on this route exactly as on the kill one.
+func TestCommandRouteRefusesTheWrongSecret(t *testing.T) {
+	rec := &commandRecorder{}
+	ts, _, _ := serveWith(t, rec, metrics.New())
+
+	resp := postCommand(t, ts, "not-the-secret", commandBody(testServerGUID, "!balance"))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status %d, want 404", resp.StatusCode)
+	}
+	if len(rec.all()) != 0 {
+		t.Error("a command with the wrong secret was dispatched")
+	}
+}
+
+// TestCommandRouteRefusesAnotherServer: a second game server pointed here
+// would otherwise whisper this server's players in reply to its own.
+func TestCommandRouteRefusesAnotherServer(t *testing.T) {
+	rec := &commandRecorder{}
+	ts, _, _ := serveWith(t, rec, metrics.New())
+
+	resp := postCommand(t, ts, testSecret,
+		commandBody("11111111-2222-3333-4444-555555555555", "!balance"))
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+	if len(rec.all()) != 0 {
+		t.Error("a command from another server was dispatched")
+	}
+}
+
+// TestCommandRouteRefusesUnusableIdentifiers is the injection guard. The
+// Alderon ID is not merely stored on this route: it becomes the target of an
+// RCON whisper, so anything that could carry a second command with it is
+// refused at the door rather than deeper in.
+func TestCommandRouteRefusesUnusableIdentifiers(t *testing.T) {
+	for name, agid := range map[string]string{
+		"empty":     "",
+		"blank":     "   ",
+		"injection": testAGID + " 100",
+		"newline":   testAGID + "\nBan " + testAGID,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := &commandRecorder{}
+			ts, _, _ := serveWith(t, rec, metrics.New())
+
+			body, err := json.Marshal(map[string]any{
+				"ServerGuid": testServerGUID,
+				"PlayerName": "testplayer",
+				"AlderonId":  agid,
+				"Message":    "!balance",
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			resp := postCommand(t, ts, testSecret, string(body))
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status %d, want 400", resp.StatusCode)
+			}
+			if len(rec.all()) != 0 {
+				t.Errorf("a command with agid %q was dispatched", agid)
+			}
+		})
+	}
+}
+
+// TestCommandRouteRefusesMalformedBodies.
+func TestCommandRouteRefusesMalformedBodies(t *testing.T) {
+	rec := &commandRecorder{}
+	ts, _, _ := serveWith(t, rec, metrics.New())
+
+	if resp := postCommand(t, ts, testSecret, "{not json"); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", resp.StatusCode)
+	}
+	if resp := postCommand(t, ts, testSecret,
+		strings.Repeat("a", 70<<10)); resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("status %d, want 413", resp.StatusCode)
+	}
+	if len(rec.all()) != 0 {
+		t.Error("a malformed command was dispatched")
+	}
+}
+
+// TestDuplicateCommandsAreBothDispatched: this route deliberately does NOT
+// dedupe. The payload carries no event id and no timestamp, so two identical
+// deliveries are indistinguishable from one player typing the same thing
+// twice -- which is a thing players do. Collapsing them would silently swallow
+// a real request; the bank's cooldown and one-in-flight index are what make
+// the duplicate safe.
+func TestDuplicateCommandsAreBothDispatched(t *testing.T) {
+	rec := &commandRecorder{}
+	ts, _, _ := serveWith(t, rec, metrics.New())
+
+	body := commandBody(testServerGUID, "!balance")
+	for range 2 {
+		if resp := postCommand(t, ts, testSecret, body); resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d, want 200", resp.StatusCode)
+		}
+	}
+	if got := rec.all(); len(got) != 2 {
+		t.Fatalf("%d commands dispatched, want 2", len(got))
+	}
+}
+
+// TestRefusedDeliveriesAreCounted: a Game.ini pointed at the wrong secret, or
+// at another server's bot, otherwise looks exactly like nobody typing
+// anything. Accepted deliveries are deliberately NOT counted here -- the
+// dispatcher counts those under the command the player actually typed.
+func TestRefusedDeliveriesAreCounted(t *testing.T) {
+	rec := &commandRecorder{}
+	m := metrics.New()
+	ts, _, _ := serveWith(t, rec, m)
+
+	postCommand(t, ts, "wrong", commandBody(testServerGUID, "!balance"))
+	postCommand(t, ts, testSecret, commandBody(testServerGUID, "!balance"))
+
+	body := scrape(t, m)
+	want := `obsidibot_game_commands_total{command="delivery",result="rejected"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("scrape does not contain %q:\n%s", want, body)
+	}
+	if strings.Contains(body, `command="delivery",result="ok"`) {
+		t.Error("an accepted delivery was counted at the route as well as at the dispatcher")
+	}
+}
+
+// scrape renders the registry exactly as a Prometheus scrape would see it.
+func scrape(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Registry.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
 }

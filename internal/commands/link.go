@@ -8,8 +8,6 @@ package commands
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -21,20 +19,12 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/db"
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
 	"github.com/USA-RedDragon/obsidibot/internal/interactions"
+	"github.com/USA-RedDragon/obsidibot/internal/linkcode"
 	"github.com/USA-RedDragon/obsidibot/internal/pot"
 	"github.com/bwmarrin/discordgo"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// codeAlphabet omits 0/O/1/I/L and every vowel-adjacent lookalike, because the
-// player reads this off an in-game chat line and types it into Discord. A code
-// that is unambiguous to read is worth more here than one extra bit of entropy.
-const codeAlphabet = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
-
-// codeLength gives 30^6 ~ 7.3e8 codes. Against five attempts inside a
-// five-minute window that is not guessable, and it stays short enough to retype
-// without resentment.
-const codeLength = 6
 
 // Linker implements /link.
 type Linker struct {
@@ -146,7 +136,7 @@ func (l *Linker) start(ctx context.Context, discordUserID, ident string) (intera
 	// Bound how often one user can cause a message to appear in the game. A
 	// challenge is a whisper to another person's screen, so an uncapped
 	// /link start is a spam button pointed at whoever they name.
-	switch pending, err := q.GetChallenge(ctx, discordUserID); {
+	switch pending, err := q.GetChallengeByDiscordID(ctx, &discordUserID); {
 	case err == nil:
 		if wait := time.Until(pending.CreatedAt.Add(l.cfg.Link.ReissueCooldown())); wait > 0 {
 			return userError(fmt.Sprintf("You just requested a code. Try again in %d seconds.",
@@ -183,33 +173,54 @@ func (l *Linker) start(ctx context.Context, discordUserID, ident string) (intera
 		slog.WarnContext(ctx, "could not clear expired link challenges", "error", err)
 	}
 
-	// One live challenge per identity, whoever started it: otherwise a user can
-	// wipe someone else's pending challenge, or whisper them repeatedly by
-	// naming their account over and over.
+	// One live challenge per identity, whoever started it: otherwise a user
+	// can wipe someone else's pending challenge, or whisper them repeatedly by
+	// naming their account over and over. This guard SURVIVES the re-keying of
+	// the table on purpose -- with the upsert's conflict target now on
+	// alderon_id, dropping it would turn the upsert itself into the stomp.
 	switch live, err := q.GetLiveChallengeByAlderonID(ctx, player.AGID); {
-	case err == nil && live.DiscordUserID != discordUserID:
+	case err == nil && live.DiscordUserID == nil:
+		// An in-game !link is pending for this identity. Whoever typed it is
+		// holding the account, so point the caller at claiming that code
+		// rather than replacing it.
+		return userError("A code was already sent to that character in game. " +
+			"Use `/link confirm` with it."), nil
+	case err == nil && *live.DiscordUserID != discordUserID:
 		return userError("Somebody is already trying to link that identity. Try again in a few minutes."), nil
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return interactions.Reply{}, fmt.Errorf("look up live challenge: %w", err)
 	}
 
-	code, err := newCode()
+	code, err := linkcode.New()
 	if err != nil {
 		return interactions.Reply{}, fmt.Errorf("generate link code: %w", err)
 	}
-	sum := sha256.Sum256([]byte(code))
 
-	if err := q.UpsertChallenge(ctx, gen.UpsertChallengeParams{
-		DiscordUserID: discordUserID,
-		AlderonID:     player.AGID,
-		PlayerName:    player.Name,
-		// Only the hash is stored. The plaintext lives in the message the game
-		// delivers and nowhere else, so database access cannot be turned into
-		// claiming someone's in-game identity.
-		CodeHash:  sum[:],
-		ExpiresAt: time.Now().Add(l.cfg.Link.CodeTTL()),
-	}); err != nil {
-		return interactions.Reply{}, fmt.Errorf("store link challenge: %w", err)
+	// Delete-then-upsert in ONE transaction: the caller may hold a pending
+	// challenge against a DIFFERENT identity, and with the conflict target on
+	// alderon_id, the unique(discord_user_id) constraint would refuse the
+	// upsert unless that older challenge is cleared first. Two statements
+	// outside a transaction would leave a window with neither.
+	err = l.store.InTx(ctx, func(q *gen.Queries) error {
+		if _, err := q.DeleteChallengeByDiscordID(ctx, &discordUserID); err != nil {
+			return fmt.Errorf("clear previous challenge: %w", err)
+		}
+		if err := q.UpsertChallenge(ctx, gen.UpsertChallengeParams{
+			AlderonID:     player.AGID,
+			DiscordUserID: &discordUserID,
+			PlayerName:    player.Name,
+			// Only the hash is stored. The plaintext lives in the message the
+			// game delivers and nowhere else, so database access cannot be
+			// turned into claiming someone's in-game identity.
+			CodeHash:  linkcode.Hash(code),
+			ExpiresAt: time.Now().Add(l.cfg.Link.CodeTTL()),
+		}); err != nil {
+			return fmt.Errorf("store link challenge: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return interactions.Reply{}, err
 	}
 
 	if err := l.deliver(ctx, player.AGID, code); err != nil {
@@ -235,48 +246,93 @@ func (l *Linker) deliver(ctx context.Context, agid, code string) error {
 }
 
 // confirm checks the code and, if it matches, makes the link.
+//
+// A code can have arrived two ways: (A) the caller ran /link start, so the
+// challenge row carries their Discord id; (B) somebody typed !link in game, so
+// the row is unclaimed (discord_user_id null) and knowing the code IS the
+// claim -- the whisper only ever appeared on the screen of whoever controls
+// that identity.
 func (l *Linker) confirm(ctx context.Context, discordUserID, code string) (interactions.Reply, error) {
 	q := l.store.Queries()
 
-	challenge, err := q.GetChallenge(ctx, discordUserID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return userError("You have no link in progress. Start one with `/link start`."), nil
-	}
-	if err != nil {
-		return interactions.Reply{}, fmt.Errorf("load link challenge: %w", err)
-	}
-
-	if time.Now().After(challenge.ExpiresAt) {
-		if err := q.DeleteChallenge(ctx, discordUserID); err != nil {
-			slog.WarnContext(ctx, "could not delete expired challenge", "error", err)
-		}
-		return userError("That code has expired. Run `/link start` again."), nil
-	}
-
 	// Normalised the same way the code was generated, so a player who typed it
 	// in lower case, or with the spaces a chat line might wrap in, still
-	// succeeds. Case folding here is not a weakening: the alphabet has no
-	// lower-case members, so nothing collides.
-	sum := sha256.Sum256([]byte(normaliseCode(code)))
-	if subtle.ConstantTimeCompare(sum[:], challenge.CodeHash) != 1 {
-		attempts, err := q.IncrementChallengeAttempts(ctx, discordUserID)
+	// succeeds.
+	hash := linkcode.Hash(linkcode.Normalise(code))
+
+	// Path A: the caller's own Discord-initiated challenge.
+	var own *gen.LinkChallenge
+	var ownExpired bool
+	switch row, err := q.GetChallengeByDiscordID(ctx, &discordUserID); {
+	case err == nil:
+		if time.Now().After(row.ExpiresAt) {
+			if derr := q.DeleteChallengeByAlderonID(ctx, row.AlderonID); derr != nil {
+				slog.WarnContext(ctx, "could not delete expired challenge", "error", derr)
+			}
+			ownExpired = true
+		} else {
+			own = &row
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return interactions.Reply{}, fmt.Errorf("load link challenge: %w", err)
+	}
+	if own != nil && subtle.ConstantTimeCompare(hash, own.CodeHash) == 1 {
+		return l.complete(ctx, discordUserID, *own)
+	}
+
+	// Path B: unclaimed in-game-initiated challenges -- and it runs BEFORE any
+	// attempt is burned on path A. A caller holding a Discord-initiated
+	// challenge on one identity who then typed !link on another would
+	// otherwise burn attempts on the wrong row every time, while /link start
+	// refuses them a reset because a challenge is pending: a deadlock.
+	unclaimed, err := q.ListUnclaimedLiveChallenges(ctx)
+	if err != nil {
+		return interactions.Reply{}, fmt.Errorf("scan unclaimed challenges: %w", err)
+	}
+	// Every row is compared even after a hit: an early exit would let response
+	// timing hint at where in the list a guessed code sits. And no attempts
+	// are burned on unclaimed rows in any outcome -- a wrong guess must not
+	// destroy other players' pending in-game links, and brute force is
+	// impractical against 30^6 codes inside a five-minute TTL behind Discord's
+	// rate limits.
+	var matched *gen.LinkChallenge
+	for i := range unclaimed {
+		if subtle.ConstantTimeCompare(hash, unclaimed[i].CodeHash) == 1 && matched == nil {
+			matched = &unclaimed[i]
+		}
+	}
+	if matched != nil {
+		return l.complete(ctx, discordUserID, *matched)
+	}
+
+	// Both paths missed. Only now does the caller's own challenge pay for the
+	// failure.
+	if own != nil {
+		attempts, err := q.IncrementChallengeAttempts(ctx, own.AlderonID)
 		if err != nil {
 			return interactions.Reply{}, fmt.Errorf("record failed attempt: %w", err)
 		}
 		remaining := int32(l.cfg.Link.MaxAttempts) - attempts //nolint:gosec // bounded by config validation
 		if remaining <= 0 {
-			if err := q.DeleteChallenge(ctx, discordUserID); err != nil {
+			if err := q.DeleteChallengeByAlderonID(ctx, own.AlderonID); err != nil {
 				slog.WarnContext(ctx, "could not burn exhausted challenge", "error", err)
 			}
 			return userError("Too many wrong codes. Run `/link start` to get a new one."), nil
 		}
 		return userError(fmt.Sprintf("That code is not right. %d attempt(s) left.", remaining)), nil
 	}
+	if ownExpired {
+		return userError("That code has expired. Run `/link start` again, or type `!link` in game."), nil
+	}
+	return userError("That code does not match any link in progress. " +
+		"Start one with `/link start`, or type `!link` in game."), nil
+}
 
-	// One transaction: the player row, the link, the bank account and the
-	// spent challenge are one fact. A crash partway through must not leave a
-	// link with no account behind it.
-	err = l.store.InTx(ctx, func(q *gen.Queries) error {
+// complete finishes a link in one transaction: the player row, the link, the
+// bank account and the spent challenge are one fact. A crash partway through
+// must not leave a link with no account behind it.
+func (l *Linker) complete(ctx context.Context, discordUserID string, challenge gen.LinkChallenge) (interactions.Reply, error) {
+	err := l.store.InTx(ctx, func(q *gen.Queries) error {
 		if err := q.UpsertPlayerSeen(ctx, gen.UpsertPlayerSeenParams{
 			AlderonID:     challenge.AlderonID,
 			LastKnownName: challenge.PlayerName,
@@ -293,11 +349,18 @@ func (l *Linker) confirm(ctx context.Context, discordUserID, code string) (inter
 		if err := q.EnsureBankAccount(ctx, challenge.AlderonID); err != nil {
 			return fmt.Errorf("create bank account: %w", err)
 		}
-		if err := q.DeleteChallenge(ctx, discordUserID); err != nil {
+		if err := q.DeleteChallengeByAlderonID(ctx, challenge.AlderonID); err != nil {
 			return fmt.Errorf("clear challenge: %w", err)
 		}
 		return nil
 	})
+	// Two racers can claim the same code, and an already-linked caller can
+	// claim a fresh one; either way CreateLink's unique constraints refuse the
+	// transaction. The loser deserves the truth, not the generic failure.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return userError("That code was just used, or you are already linked. Check `/link status`."), nil
+	}
 	if err != nil {
 		return interactions.Reply{}, err
 	}
@@ -339,35 +402,6 @@ func (l *Linker) remove(ctx context.Context, discordUserID string) (interactions
 	}
 	return interactions.Reply{Content: "Unlinked. Your stats and banked marks are kept, " +
 		"and come back if you link the same identity again."}, nil
-}
-
-// newCode returns a fresh link code.
-//
-// The modulo is unbiased because len(codeAlphabet) is 30 and the source is a
-// uniform byte reduced by rejection rather than by truncation.
-func newCode() (string, error) {
-	alphabet := []byte(codeAlphabet)
-	out := make([]byte, 0, codeLength)
-	// 256 is not a multiple of 30, so bytes at or above the largest multiple
-	// are discarded; taking them would make the first six letters likelier.
-	limit := 256 - (256 % len(alphabet))
-	buf := make([]byte, 1)
-	for len(out) < codeLength {
-		if _, err := rand.Read(buf); err != nil {
-			return "", fmt.Errorf("read random bytes: %w", err)
-		}
-		if int(buf[0]) >= limit {
-			continue
-		}
-		out = append(out, alphabet[int(buf[0])%len(alphabet)])
-	}
-	return string(out), nil
-}
-
-// normaliseCode forgives the ways a code gets mangled between an in-game chat
-// line and a Discord text box.
-func normaliseCode(code string) string {
-	return strings.ToUpper(strings.TrimSpace(code))
 }
 
 // optionString reads a string option, returning "" when absent.

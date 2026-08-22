@@ -9,6 +9,7 @@ import (
 
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
 	"github.com/USA-RedDragon/obsidibot/internal/interactions"
+	"github.com/USA-RedDragon/obsidibot/internal/linkcode"
 	"github.com/bwmarrin/discordgo"
 )
 
@@ -17,6 +18,10 @@ const (
 	testName    = "testplayer"
 	discordUser = "discord-1"
 )
+
+// strPtr exists because the challenge queries take *string for the nullable
+// discord_user_id and Go cannot take the address of a constant.
+func strPtr(s string) *string { return &s }
 
 // linkInvoke builds the interaction a /link subcommand arrives in.
 func linkInvoke(sub string, options map[string]string) interactions.Context {
@@ -63,7 +68,7 @@ func TestLinkStartSendsCodeOnlyIntoTheGame(t *testing.T) {
 	}
 
 	// And it is not recoverable from the database either.
-	challenge, err := h.store.Queries().GetChallenge(context.Background(), discordUser)
+	challenge, err := h.store.Queries().GetChallengeByDiscordID(context.Background(), strPtr(discordUser))
 	if err != nil {
 		t.Fatalf("challenge not stored: %v", err)
 	}
@@ -111,7 +116,7 @@ func TestLinkHappyPath(t *testing.T) {
 		t.Errorf("bank account not created: %v", err)
 	}
 	// The challenge is spent, so a replayed code cannot link again.
-	if _, err := q.GetChallenge(ctx, discordUser); err == nil {
+	if _, err := q.GetChallengeByDiscordID(ctx, strPtr(discordUser)); err == nil {
 		t.Error("the challenge survived a successful confirm")
 	}
 }
@@ -163,14 +168,14 @@ func TestWrongCodesAreBurnedAfterMaxAttempts(t *testing.T) {
 	}
 
 	// The challenge is gone, so the real code no longer works either.
-	if _, err := h.store.Queries().GetChallenge(ctx, discordUser); err == nil {
+	if _, err := h.store.Queries().GetChallengeByDiscordID(ctx, strPtr(discordUser)); err == nil {
 		t.Fatal("the challenge survived the attempt limit")
 	}
 	reply, err := handler(ctx, linkInvoke("confirm", map[string]string{"code": h.rcon.lastCode(t)}))
 	if err != nil {
 		t.Fatalf("confirm after burn: %v", err)
 	}
-	if !reply.UserError || !strings.Contains(reply.Content, "no link in progress") {
+	if !reply.UserError || !strings.Contains(reply.Content, "link in progress") {
 		t.Fatalf("a burned challenge still accepted its code: %q", reply.Content)
 	}
 }
@@ -216,7 +221,7 @@ func TestLinkRequiresBeingInGame(t *testing.T) {
 	if !reply.UserError || !strings.Contains(reply.Content, "logged into the server") {
 		t.Fatalf("an offline player was allowed to start a link: %q", reply.Content)
 	}
-	if _, err := h.store.Queries().GetChallenge(context.Background(), discordUser); err == nil {
+	if _, err := h.store.Queries().GetChallengeByDiscordID(context.Background(), strPtr(discordUser)); err == nil {
 		t.Error("a challenge was stored for an offline player")
 	}
 }
@@ -284,7 +289,7 @@ func TestCannotStompAnotherUsersPendingChallenge(t *testing.T) {
 
 	sum := sha256.Sum256([]byte("ABC123"))
 	if err := h.store.Queries().UpsertChallenge(ctx, gen.UpsertChallengeParams{
-		DiscordUserID: "someone-else",
+		DiscordUserID: strPtr("someone-else"),
 		AlderonID:     testAGID,
 		PlayerName:    testName,
 		CodeHash:      sum[:],
@@ -301,7 +306,7 @@ func TestCannotStompAnotherUsersPendingChallenge(t *testing.T) {
 		t.Fatalf("another user's pending challenge was stomped: %q", reply.Content)
 	}
 
-	kept, err := h.store.Queries().GetChallenge(ctx, "someone-else")
+	kept, err := h.store.Queries().GetChallengeByDiscordID(ctx, strPtr("someone-else"))
 	if err != nil {
 		t.Fatalf("the other user's challenge was destroyed: %v", err)
 	}
@@ -381,6 +386,205 @@ func TestStatusAndRemove(t *testing.T) {
 	}
 	if !reply.UserError {
 		t.Error("removing a link that does not exist reported success")
+	}
+}
+
+// seedUnclaimed plants an in-game-initiated challenge: no Discord user owns
+// it, so the code itself is the claim.
+// It returns the code it planted, which is the only way to reach that
+// challenge -- exactly as in game.
+func seedUnclaimed(t *testing.T, h *linkHarness) string {
+	t.Helper()
+	const code = "ABC234"
+	if err := h.store.Queries().UpsertChallenge(context.Background(), gen.UpsertChallengeParams{
+		AlderonID:  testAGID,
+		PlayerName: testName,
+		CodeHash:   linkcode.Hash(code),
+		ExpiresAt:  time.Now().Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed unclaimed challenge: %v", err)
+	}
+	return code
+}
+
+// TestConfirmClaimsAnInGameChallenge is the new half of the link scheme: the
+// challenge was started by typing !link in game, so no Discord user owns it,
+// and whoever brings the code to /link confirm becomes the link.
+func TestConfirmClaimsAnInGameChallenge(t *testing.T) {
+	h := newLinkHarness(t)
+	ctx := context.Background()
+	code := seedUnclaimed(t, h)
+
+	// Typed the way a player types: mangled case, stray space.
+	reply, err := h.linker.Command().Handler(ctx,
+		linkInvoke("confirm", map[string]string{"code": " " + strings.ToLower(code)}))
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if reply.UserError {
+		t.Fatalf("a correct in-game code was refused: %q", reply.Content)
+	}
+
+	q := h.store.Queries()
+	link, err := q.GetLinkByDiscordID(ctx, discordUser)
+	if err != nil {
+		t.Fatalf("link not created: %v", err)
+	}
+	if link.AlderonID != testAGID {
+		t.Errorf("linked to %q, want %q", link.AlderonID, testAGID)
+	}
+	if _, err := q.GetPlayer(ctx, testAGID); err != nil {
+		t.Errorf("player row not created: %v", err)
+	}
+	if _, err := q.GetBankAccount(ctx, testAGID); err != nil {
+		t.Errorf("bank account not created: %v", err)
+	}
+	if _, err := q.GetChallengeByAlderonID(ctx, testAGID); err == nil {
+		t.Error("the challenge survived being claimed")
+	}
+}
+
+// TestWrongCodeDoesNotBurnUnclaimedChallenges: an unclaimed challenge belongs
+// to whoever is in game, and a stranger's wrong guess in Discord must not
+// destroy it. Brute force is impractical against 30^6 codes inside the TTL, so
+// forgiving guesses here costs nothing.
+func TestWrongCodeDoesNotBurnUnclaimedChallenges(t *testing.T) {
+	h := newLinkHarness(t)
+	ctx := context.Background()
+	seedUnclaimed(t, h)
+
+	for range h.cfg.Link.MaxAttempts + 1 {
+		reply, err := h.linker.Command().Handler(ctx,
+			linkInvoke("confirm", map[string]string{"code": "WRONG2"}))
+		if err != nil {
+			t.Fatalf("confirm: %v", err)
+		}
+		if !reply.UserError {
+			t.Fatalf("a wrong code was accepted: %q", reply.Content)
+		}
+	}
+
+	row, err := h.store.Queries().GetChallengeByAlderonID(ctx, testAGID)
+	if err != nil {
+		t.Fatalf("the unclaimed challenge was destroyed by wrong guesses: %v", err)
+	}
+	if row.Attempts != 0 {
+		t.Errorf("attempts = %d, want 0: unclaimed challenges must not be burned", row.Attempts)
+	}
+}
+
+// TestStartReplacesOwnChallengeOnAnotherIdentity is the unique-constraint
+// trap: with the table keyed by identity, a caller who holds a pending
+// challenge on a DIFFERENT identity would violate unique(discord_user_id)
+// unless start clears their old row in the same transaction.
+func TestStartReplacesOwnChallengeOnAnotherIdentity(t *testing.T) {
+	h := newLinkHarness(t)
+	ctx := context.Background()
+	q := h.store.Queries()
+
+	if err := q.UpsertChallenge(ctx, gen.UpsertChallengeParams{
+		AlderonID:     "555-000-999",
+		DiscordUserID: strPtr(discordUser),
+		PlayerName:    "oldname",
+		CodeHash:      linkcode.Hash("OLD234"),
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed old challenge: %v", err)
+	}
+	// Age it past the reissue cooldown, which keys off created_at.
+	if _, err := h.pool.Exec(ctx,
+		"update link_challenges set created_at = now() - interval '1 hour'"); err != nil {
+		t.Fatalf("age challenge: %v", err)
+	}
+
+	reply, err := h.linker.Command().Handler(ctx, linkInvoke("start", map[string]string{"player": testAGID}))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if reply.UserError {
+		t.Fatalf("a fresh start against a new identity was refused: %q", reply.Content)
+	}
+
+	if _, err := q.GetChallengeByAlderonID(ctx, "555-000-999"); err == nil {
+		t.Error("the old challenge survived; the same user now holds two")
+	}
+	fresh, err := q.GetChallengeByAlderonID(ctx, testAGID)
+	if err != nil {
+		t.Fatalf("no challenge on the new identity: %v", err)
+	}
+	if fresh.DiscordUserID == nil || *fresh.DiscordUserID != discordUser {
+		t.Errorf("new challenge owner = %v, want %q", fresh.DiscordUserID, discordUser)
+	}
+}
+
+// TestStartYieldsToAPendingInGameChallenge: someone already typed !link on
+// that character, and they are the identity's authority. /link start must
+// point at the existing code, not stomp it with a fresh one.
+func TestStartYieldsToAPendingInGameChallenge(t *testing.T) {
+	h := newLinkHarness(t)
+	ctx := context.Background()
+	seedUnclaimed(t, h)
+
+	reply, err := h.linker.Command().Handler(ctx, linkInvoke("start", map[string]string{"player": testAGID}))
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if !reply.UserError || !strings.Contains(reply.Content, "/link confirm") {
+		t.Fatalf("start did not defer to the in-game challenge: %q", reply.Content)
+	}
+	row, err := h.store.Queries().GetChallengeByAlderonID(ctx, testAGID)
+	if err != nil {
+		t.Fatalf("the in-game challenge was destroyed: %v", err)
+	}
+	if row.DiscordUserID != nil {
+		t.Error("the in-game challenge was claimed by /link start")
+	}
+}
+
+// TestInGameCodeWinsOverAStalePendingChallenge is the deadlock the path
+// ordering exists to break: the caller started a Discord link on one identity,
+// then typed !link on another. Their in-game code can never match their own
+// pending row, so checking the unclaimed pool only AFTER burning an attempt
+// would spend all their attempts on the wrong row -- while /link start refuses
+// a reset because a challenge is pending.
+func TestInGameCodeWinsOverAStalePendingChallenge(t *testing.T) {
+	h := newLinkHarness(t)
+	ctx := context.Background()
+	q := h.store.Queries()
+
+	if err := q.UpsertChallenge(ctx, gen.UpsertChallengeParams{
+		AlderonID:     "555-000-999",
+		DiscordUserID: strPtr(discordUser),
+		PlayerName:    "oldname",
+		CodeHash:      linkcode.Hash("OLD234"),
+		ExpiresAt:     time.Now().Add(5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed stale challenge: %v", err)
+	}
+	code := seedUnclaimed(t, h)
+
+	reply, err := h.linker.Command().Handler(ctx,
+		linkInvoke("confirm", map[string]string{"code": code}))
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if reply.UserError {
+		t.Fatalf("the in-game code was refused: %q", reply.Content)
+	}
+
+	link, err := q.GetLinkByDiscordID(ctx, discordUser)
+	if err != nil {
+		t.Fatalf("link not created: %v", err)
+	}
+	if link.AlderonID != testAGID {
+		t.Errorf("linked to %q, want the in-game identity %q", link.AlderonID, testAGID)
+	}
+	stale, err := q.GetChallengeByAlderonID(ctx, "555-000-999")
+	if err != nil {
+		t.Fatalf("read stale challenge: %v", err)
+	}
+	if stale.Attempts != 0 {
+		t.Errorf("attempts = %d on the stale row, want 0: the match was found before any burn", stale.Attempts)
 	}
 }
 

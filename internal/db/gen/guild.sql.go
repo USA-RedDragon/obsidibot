@@ -10,7 +10,7 @@ import (
 )
 
 const getGuildConfig = `-- name: GetGuildConfig :one
-select guild_id, kill_feed_channel_id, leaderboard_channel_id, leaderboard_message_id, updated_at from guild_config where guild_id = $1
+select guild_id, kill_feed_channel_id, leaderboard_channel_id, leaderboard_message_id, updated_at, mod_role_id, ban_feed_channel_id, warn_feed_channel_id from guild_config where guild_id = $1
 `
 
 func (q *Queries) GetGuildConfig(ctx context.Context, guildID string) (GuildConfig, error) {
@@ -22,8 +22,29 @@ func (q *Queries) GetGuildConfig(ctx context.Context, guildID string) (GuildConf
 		&i.LeaderboardChannelID,
 		&i.LeaderboardMessageID,
 		&i.UpdatedAt,
+		&i.ModRoleID,
+		&i.BanFeedChannelID,
+		&i.WarnFeedChannelID,
 	)
 	return i, err
+}
+
+const setBanFeedChannel = `-- name: SetBanFeedChannel :exec
+insert into guild_config (guild_id, ban_feed_channel_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set ban_feed_channel_id = excluded.ban_feed_channel_id,
+        updated_at          = now()
+`
+
+type SetBanFeedChannelParams struct {
+	GuildID          string
+	BanFeedChannelID *string
+}
+
+func (q *Queries) SetBanFeedChannel(ctx context.Context, arg SetBanFeedChannelParams) error {
+	_, err := q.db.Exec(ctx, setBanFeedChannel, arg.GuildID, arg.BanFeedChannelID)
+	return err
 }
 
 const setKillFeedChannel = `-- name: SetKillFeedChannel :exec
@@ -80,5 +101,41 @@ type SetLeaderboardMessageParams struct {
 
 func (q *Queries) SetLeaderboardMessage(ctx context.Context, arg SetLeaderboardMessageParams) error {
 	_, err := q.db.Exec(ctx, setLeaderboardMessage, arg.GuildID, arg.LeaderboardMessageID)
+	return err
+}
+
+const setModRole = `-- name: SetModRole :exec
+insert into guild_config (guild_id, mod_role_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set mod_role_id = excluded.mod_role_id,
+        updated_at  = now()
+`
+
+type SetModRoleParams struct {
+	GuildID   string
+	ModRoleID *string
+}
+
+func (q *Queries) SetModRole(ctx context.Context, arg SetModRoleParams) error {
+	_, err := q.db.Exec(ctx, setModRole, arg.GuildID, arg.ModRoleID)
+	return err
+}
+
+const setWarnFeedChannel = `-- name: SetWarnFeedChannel :exec
+insert into guild_config (guild_id, warn_feed_channel_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set warn_feed_channel_id = excluded.warn_feed_channel_id,
+        updated_at           = now()
+`
+
+type SetWarnFeedChannelParams struct {
+	GuildID           string
+	WarnFeedChannelID *string
+}
+
+func (q *Queries) SetWarnFeedChannel(ctx context.Context, arg SetWarnFeedChannelParams) error {
+	_, err := q.db.Exec(ctx, setWarnFeedChannel, arg.GuildID, arg.WarnFeedChannelID)
 	return err
 }

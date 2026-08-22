@@ -97,6 +97,21 @@ func (ns NullBankState) Value() (driver.Value, error) {
 	return string(ns.BankState), nil
 }
 
+type Ban struct {
+	ID                  int64
+	AlderonID           *string
+	DiscordUserID       *string
+	TargetName          *string
+	Reason              string
+	IssuedByDiscordID   string
+	CreatedAt           time.Time
+	ExpiresAt           *time.Time
+	EnforcedAt          *time.Time
+	LiftedAt            *time.Time
+	LiftReason          *string
+	UnenforceableReason *string
+}
+
 type BankAccount struct {
 	AlderonID string
 	Balance   int64
@@ -127,6 +142,9 @@ type GuildConfig struct {
 	LeaderboardChannelID *string
 	LeaderboardMessageID *string
 	UpdatedAt            time.Time
+	ModRoleID            *string
+	BanFeedChannelID     *string
+	WarnFeedChannelID    *string
 }
 
 type KillEvent struct {
@@ -162,8 +180,8 @@ type KillEvent struct {
 }
 
 type LinkChallenge struct {
-	DiscordUserID string
 	AlderonID     string
+	DiscordUserID *string
 	PlayerName    string
 	CodeHash      []byte
 	Attempts      int32
@@ -187,4 +205,14 @@ type PlayerLink struct {
 	DiscordUserID string
 	AlderonID     string
 	LinkedAt      time.Time
+}
+
+type Warn struct {
+	ID                int64
+	AlderonID         *string
+	DiscordUserID     *string
+	TargetName        *string
+	Reason            string
+	IssuedByDiscordID string
+	CreatedAt         time.Time
 }

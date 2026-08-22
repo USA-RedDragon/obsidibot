@@ -488,3 +488,212 @@ func TestServerInfoRefusesGarbage(t *testing.T) {
 		}
 	}
 }
+
+// The moderation responses, captured VERBATIM from a live Path of Titans server
+// during design (probes against nonexistent Alderon IDs, plus one consenting
+// admin who was temporarily de-adminned; bans.txt was restored afterwards).
+// Only the identifiers are anonymised. If Alderon changes any of these, the
+// classification below is where it shows up.
+const (
+	liveKicked     = `(Kick 555-000-101 "banned - griefing"): Requested action against player ID.`
+	liveKickFailed = `(Kick 000-000-000 "banned - griefing"): Failed to kick '000-000-000'.`
+	liveBanned     = `(Ban 555-000-101 0 "obsidibot ban #1 by discord-1" "griefing"): ` +
+		`Banned '555-000-101' forever, Admin reason = obsidibot ban #1 by discord-1`
+	liveAlreadyBanned  = `(Ban 555-000-101 0 "a" "b"): Player '555-000-101' is already banned.`
+	liveCannotBanAdmin = `(Ban 555-000-101 0 "a" "b"): Cannot ban an admin.`
+	liveUnbanned       = `(Unban 555-000-101): Unbanned player with Id '555-000-101'.`
+	liveUnknownBan     = `(Unban 000-000-000): Unknown ban string '000-000-000'. Perhaps you meant to use AGID?`
+)
+
+// TestModerationResponsesAreClassified is the whole contract with the game
+// server: each of these is a DIFFERENT decision -- carry on, treat as enforced,
+// never retry, or report nothing to lift -- and reading one as another is how a
+// banned player keeps playing or an innocent one gets kicked.
+func TestModerationResponsesAreClassified(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		raw     string
+		call    func(*pot.Client) error
+		wantErr error
+	}{
+		{"kick of an online player", liveKicked,
+			func(c *pot.Client) error { return c.Kick(ctx, "555-000-101", "griefing") }, nil},
+		{"kick of an offline player", liveKickFailed,
+			func(c *pot.Client) error { return c.Kick(ctx, "000-000-000", "griefing") }, pot.ErrKickFailed},
+		{"ban placed", liveBanned,
+			func(c *pot.Client) error { return c.Ban(ctx, "555-000-101", "admin", "user") }, nil},
+		{"ban repeated", liveAlreadyBanned,
+			func(c *pot.Client) error { return c.Ban(ctx, "555-000-101", "admin", "user") }, pot.ErrAlreadyBanned},
+		{"ban of a server admin", liveCannotBanAdmin,
+			func(c *pot.Client) error { return c.Ban(ctx, "555-000-101", "admin", "user") }, pot.ErrCannotBanAdmin},
+		{"unban", liveUnbanned,
+			func(c *pot.Client) error { return c.Unban(ctx, "555-000-101") }, nil},
+		{"unban of a never-banned id", liveUnknownBan,
+			func(c *pot.Client) error { return c.Unban(ctx, "000-000-000") }, pot.ErrNotBanned},
+		{"the command was renamed", `(Ban 555-000-101 0 "a" "b"): That command does not exist.`,
+			func(c *pot.Client) error { return c.Ban(ctx, "555-000-101", "admin", "user") }, pot.ErrCommandRejected},
+		{"an answer nothing recognises", `(Ban 555-000-101 0 "a" "b"): what`,
+			func(c *pot.Client) error { return c.Ban(ctx, "555-000-101", "admin", "user") }, pot.ErrUnparseable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call(pot.NewClient(&fakeExec{response: tc.raw}, nil))
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("got %v, want success", err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("got %v, want %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestBanIsAlwaysPermanent. The game's own timed ban was verified to write a
+// corrupt bans.txt row with an EMPTY id field, which binds nobody and which
+// Unban can never match -- so the time argument is hardcoded to 0 and expiry is
+// obsidibot's to own. This test is the guard on that.
+func TestBanIsAlwaysPermanent(t *testing.T) {
+	exec := &fakeExec{response: liveBanned}
+	if err := pot.NewClient(exec, nil).Ban(context.Background(),
+		"555-000-101", "obsidibot ban #1 by discord-1", "griefing"); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+	want := `Ban 555-000-101 0 "obsidibot ban #1 by discord-1" "griefing"`
+	if exec.commands[0] != want {
+		t.Errorf("command = %q, want %q", exec.commands[0], want)
+	}
+}
+
+// TestReasonQuotingSurvivesHostileText. Multi-word reasons must stay whole --
+// unquoted words split positionally into admin/user reason with the extras
+// silently dropped -- and a quote inside a reason would close the quoting early
+// and shift every argument after it.
+func TestReasonQuotingSurvivesHostileText(t *testing.T) {
+	exec := &fakeExec{response: liveBanned}
+	client := pot.NewClient(exec, nil)
+	ctx := context.Background()
+
+	if err := client.Ban(ctx, "555-000-101", `admin" reason`, `user" said "stop`); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+	got := exec.commands[0]
+	if strings.Count(got, `"`) != 4 {
+		t.Errorf("command has %d quotes, want exactly the four that delimit two reasons: %q",
+			strings.Count(got, `"`), got)
+	}
+	if got != `Ban 555-000-101 0 "admin reason" "user said stop"` {
+		t.Errorf("command = %q", got)
+	}
+
+	exec.response = liveKicked
+	if err := client.Kick(ctx, "555-000-101", "line one\nAnnounce pwned"); err != nil {
+		t.Fatalf("Kick: %v", err)
+	}
+	if strings.Contains(exec.commands[1], "\n") {
+		t.Errorf("a newline survived into the command: %q", exec.commands[1])
+	}
+
+	// A reason that sanitises away to nothing still has to say something: the
+	// player is shown it as they are removed.
+	exec.response = liveKicked
+	if err := client.Kick(ctx, "555-000-101", `"""`); err != nil {
+		t.Fatalf("Kick: %v", err)
+	}
+	if !strings.Contains(exec.commands[2], "no reason given") {
+		t.Errorf("an emptied reason left the player nothing: %q", exec.commands[2])
+	}
+}
+
+// TestOverLongReasonsAreTruncatedToFit. rcon.ErrCommandTooLong is returned
+// BEFORE any network activity, and the same command is the same length on every
+// retry -- so a ban that does not fit is permanently unenforceable. The
+// wrappers cut the reasons rather than let that happen.
+func TestOverLongReasonsAreTruncatedToFit(t *testing.T) {
+	exec := &fakeExec{response: liveBanned}
+	client := pot.NewClient(exec, nil)
+	ctx := context.Background()
+
+	long := strings.Repeat("x", 900)
+	if err := client.Ban(ctx, "555-000-101", long, strings.Repeat("y", 900)); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+	if len(exec.commands[0]) > rcon.MaxCommandLen {
+		t.Errorf("command is %d bytes, over rcon.MaxCommandLen", len(exec.commands[0]))
+	}
+	// Both reasons survive in part: a short one must not be starved by a long
+	// one, and neither may be dropped entirely.
+	if !strings.Contains(exec.commands[0], "xxx") || !strings.Contains(exec.commands[0], "yyy") {
+		t.Errorf("a reason was dropped entirely: %q", exec.commands[0])
+	}
+
+	exec.response = liveKicked
+	if err := client.Kick(ctx, "555-000-101", long); err != nil {
+		t.Fatalf("Kick: %v", err)
+	}
+	if len(exec.commands[1]) > rcon.MaxCommandLen {
+		t.Errorf("kick command is %d bytes, over rcon.MaxCommandLen", len(exec.commands[1]))
+	}
+}
+
+// TestModerationRefusesUnsafeIdentifiers. Enforcement always targets the
+// Alderon ID, never a name, and an identifier carrying a space would shift
+// every argument after it -- turning a reason into another command's arguments.
+func TestModerationRefusesUnsafeIdentifiers(t *testing.T) {
+	for _, ident := range []string{"555-000-101 0", "a b", "", `a"b`, "a\nBan 111-222-333"} {
+		exec := &fakeExec{response: liveBanned}
+		client := pot.NewClient(exec, nil)
+		ctx := context.Background()
+
+		if err := client.Kick(ctx, ident, "reason"); !errors.Is(err, pot.ErrInvalidIdentifier) {
+			t.Errorf("Kick(%q) = %v", ident, err)
+		}
+		if err := client.Ban(ctx, ident, "a", "b"); !errors.Is(err, pot.ErrInvalidIdentifier) {
+			t.Errorf("Ban(%q) = %v", ident, err)
+		}
+		if err := client.Unban(ctx, ident); !errors.Is(err, pot.ErrInvalidIdentifier) {
+			t.Errorf("Unban(%q) = %v", ident, err)
+		}
+		if len(exec.commands) != 0 {
+			t.Errorf("a command reached the server anyway: %q", exec.commands)
+		}
+	}
+}
+
+// TestModerationObserverSeesOnlyTheVerb: these command lines carry an Alderon
+// ID and a moderator's free text, and the observer's first argument becomes a
+// Prometheus label.
+func TestModerationObserverSeesOnlyTheVerb(t *testing.T) {
+	var verbs []string
+	exec := &fakeExec{response: liveKicked}
+	client := pot.NewClient(exec, func(verb string, _ error, _ time.Duration) {
+		verbs = append(verbs, verb)
+	})
+	ctx := context.Background()
+
+	if err := client.Kick(ctx, "555-000-101", "griefing"); err != nil {
+		t.Fatalf("Kick: %v", err)
+	}
+	exec.response = liveBanned
+	if err := client.Ban(ctx, "555-000-101", "admin", "user"); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+	exec.response = liveUnbanned
+	if err := client.Unban(ctx, "555-000-101"); err != nil {
+		t.Fatalf("Unban: %v", err)
+	}
+
+	want := []string{"Kick", "Ban", "Unban"}
+	if !reflect.DeepEqual(verbs, want) {
+		t.Fatalf("verbs = %q, want %q", verbs, want)
+	}
+	for _, verb := range verbs {
+		if strings.ContainsAny(verb, ` "-`) {
+			t.Errorf("verb %q carries an argument; this becomes a metric label", verb)
+		}
+	}
+}

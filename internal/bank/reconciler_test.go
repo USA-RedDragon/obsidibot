@@ -47,6 +47,11 @@ type fakeRCON struct {
 	// but nothing has been written down yet -- is where the request path and
 	// the reconciler collide, and it is otherwise unreachable from a test.
 	during map[string]func()
+	// reject makes the named command FAIL BEFORE IT IS SENT: the rcon library
+	// refusing (queue full, command over the length cap) without any network
+	// activity, so the mutation is provably NOT applied. The counterpart of
+	// fail, which applies the mutation and loses the answer.
+	reject map[string]error
 }
 
 func (f *fakeRCON) Execute(_ context.Context, command string) (string, error) {
@@ -55,6 +60,10 @@ func (f *fakeRCON) Execute(_ context.Context, command string) (string, error) {
 
 	f.mu.Lock()
 	f.commands = append(f.commands, command)
+	if err := f.reject[verb]; err != nil {
+		f.mu.Unlock()
+		return "", err
+	}
 	// Popped rather than read, so a hook that issues commands of its own -- the
 	// point of it -- cannot re-enter itself.
 	hook := f.during[verb]
@@ -139,7 +148,10 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("migrate: %v", err)
 	}
 	store := db.NewStore(pool)
-	fake := &fakeRCON{online: true, marks: 1000, fail: map[string]error{}, during: map[string]func(){}}
+	fake := &fakeRCON{
+		online: true, marks: 1000,
+		fail: map[string]error{}, during: map[string]func(){}, reject: map[string]error{},
+	}
 	cfg := &config.Config{Bank: config.Bank{
 		CooldownSeconds: 0, VerifyAttempts: 2,
 	}}

@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/SRS-Hosting/rcon"
 	"github.com/USA-RedDragon/obsidibot/internal/config"
 	"github.com/USA-RedDragon/obsidibot/internal/db"
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
@@ -282,14 +283,20 @@ func (b *Bank) transfer(ctx context.Context, direction gen.BankDirection,
 
 // unmoved reports whether an error proves nothing happened in game.
 //
-// The distinction is the whole basis of automatic recovery: these are the
-// server ANSWERING with a refusal, so the row can be closed. Anything else --
-// a timeout, a dropped connection, an unreadable reply -- means the command may
-// have landed, and only observation can settle it.
+// The distinction is the whole basis of automatic recovery: the first three
+// are the server ANSWERING with a refusal, and the two rcon sentinels are the
+// library refusing to send at all -- both documented to fail before any
+// network activity -- so the row can be closed. Anything else -- a timeout, a
+// dropped connection, an unreadable reply -- means the command may have
+// landed, and only observation can settle it. Missing the fail-fast pair here
+// parks a false needs_review and pages an operator for a transfer that
+// provably never left the process.
 func unmoved(err error) bool {
 	return errors.Is(err, pot.ErrPlayerNotOnline) ||
 		errors.Is(err, pot.ErrCommandRejected) ||
-		errors.Is(err, pot.ErrInvalidIdentifier)
+		errors.Is(err, pot.ErrInvalidIdentifier) ||
+		errors.Is(err, rcon.ErrBusy) ||
+		errors.Is(err, rcon.ErrCommandTooLong)
 }
 
 // issue sends the one mutating command this row will ever produce, and returns

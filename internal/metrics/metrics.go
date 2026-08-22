@@ -112,6 +112,18 @@ type Metrics struct {
 
 	// DBErrorsTotal counts database errors observed anywhere in the process.
 	DBErrorsTotal *Counter
+
+	// GameCommandsTotal counts in-game ! commands by command and result. The
+	// command label comes from the dispatcher's closed set, never raw chat.
+	GameCommandsTotal *CounterVec
+
+	// ModerationActionsTotal counts moderation actions by kind and result.
+	ModerationActionsTotal *CounterVec
+	// ModerationUnenforcedBans gauges active bans the game is not yet
+	// enforcing (target unlinked, RCON failing, scheduler behind). ALERT ON
+	// SUSTAINED NONZERO: a banned player who can still join is invisible
+	// otherwise.
+	ModerationUnenforcedBans *Gauge
 }
 
 // New builds a Metrics whose collectors are registered on a fresh private
@@ -170,6 +182,17 @@ func New() *Metrics {
 		DBErrorsTotal: r.NewCounter(
 			"obsidibot_db_errors_total",
 			"Database errors observed by obsidibot."),
+		GameCommandsTotal: r.NewCounterVec(
+			"obsidibot_game_commands_total",
+			"In-game commands dispatched from the PlayerCommand webhook, by command and result.",
+			[]string{"command", "result"}),
+		ModerationActionsTotal: r.NewCounterVec(
+			"obsidibot_moderation_actions_total",
+			"Moderation actions by kind (warn, ban, unban, expire) and result.",
+			[]string{"kind", "result"}),
+		ModerationUnenforcedBans: r.NewGauge(
+			"obsidibot_moderation_unenforced_bans",
+			"Active bans not yet enforced in game. Alert on sustained nonzero."),
 	}
 }
 

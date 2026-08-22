@@ -19,6 +19,7 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/db"
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
 	"github.com/USA-RedDragon/obsidibot/internal/dbtest"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // redirectTo sends every Discord REST call to the fake server instead, keeping
@@ -173,6 +174,22 @@ func TestTwoReplicasServeTogether(t *testing.T) {
 	dir := t.TempDir()
 	const baseA, baseB = 39100, 39200
 	game := startFakeRCON(t)
+
+	// Seeded BEFORE the replicas start, because the ban scheduler sweeps once
+	// on acquiring its lock and then only once a minute: a row inserted after
+	// startup would not be looked at again inside any sane test timeout. The
+	// migration is run here for the same reason -- the table has to exist
+	// first -- and re-running it in each replica is a no-op.
+	const bannedAGID = "555-000-777"
+	if err := db.Migrate(context.Background(), pool, dbtest.MigrationsFS(t)); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`insert into bans (alderon_id, target_name, reason, issued_by_discord_id, expires_at, enforced_at)
+		 values ($1, 'banned-player', 'e2e expiry', 'mod-1', now() - interval '1 minute', now())`,
+		bannedAGID); err != nil {
+		t.Fatalf("seed expired ban: %v", err)
+	}
 	configs := []string{
 		writeConfig(t, dir, dsn, baseA, game.port()),
 		writeConfig(t, dir, dsn, baseB, game.port()),
@@ -283,6 +300,38 @@ func TestTwoReplicasServeTogether(t *testing.T) {
 	if boards > 1 {
 		t.Errorf("%d leaderboard messages were posted; both replicas ran the job", boards)
 	}
+
+	expectOneReplicaLiftedTheBan(ctx, t, pool, game, bannedAGID)
+}
+
+// expectOneReplicaLiftedTheBan checks the ban scheduler is a single writer for
+// the same reason as every other job: it issues RCON commands off database
+// state, so two replicas sweeping would unban the same player twice and race
+// each other's bookkeeping. The expired ban seeded before startup must
+// therefore produce EXACTLY ONE Unban -- and the record must not close until
+// the game has confirmed the lift.
+func expectOneReplicaLiftedTheBan(ctx context.Context, t *testing.T,
+	pool *pgxpool.Pool, game *fakeRCON, agid string,
+) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		if err := pool.QueryRow(ctx,
+			"select count(*) from bans where alderon_id = $1 and lifted_at is not null",
+			agid).Scan(&count); err != nil {
+			t.Fatalf("read ban: %v", err)
+		}
+		if count == 1 {
+			if got := game.unbanned(); len(got) != 1 {
+				t.Errorf("the game was sent %d Unban commands for one expired ban, want exactly 1: %v",
+					len(got), got)
+			}
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("an expired ban was never lifted by either replica")
 }
 
 // TestRefusesToBootWithAPoolTooSmallForTheJobs turns the outage that started
@@ -308,7 +357,7 @@ func TestRefusesToBootWithAPoolTooSmallForTheJobs(t *testing.T) {
 	client := &http.Client{Transport: redirectTo(ts.URL)}
 	game := startFakeRCON(t)
 
-	// Six is above the configuration floor and still below what six singleton
+	// Six is above the configuration floor and still below what the singleton
 	// jobs plus live traffic need, which is exactly the deployment that used to
 	// start and then serve nothing.
 	path := writeConfigWith(t, t.TempDir(), dsn, 39300, game.port(), ", maxConns: 6")

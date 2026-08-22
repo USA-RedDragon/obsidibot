@@ -88,11 +88,30 @@ func (f *fakeRCON) serve(conn net.Conn) {
 }
 
 func (f *fakeRCON) respond(command string) string {
-	if strings.EqualFold(strings.Fields(command)[0], "ServerInfo") {
+	fields := strings.Fields(command)
+	switch {
+	case strings.EqualFold(fields[0], "ServerInfo"):
 		return "(ServerInfo): Server Name: Obsidian Wilds / UUID: " + fakeServerGUID +
 			" / TimeOfDay: 1224 / Weather: ClearSky"
+	case strings.EqualFold(fields[0], "Unban"):
+		// The real server's wording. The ban scheduler only closes a record
+		// once the game has confirmed the lift, so a generic "ok" here would
+		// leave it retrying forever.
+		return "(" + command + "): Unbanned player with Id '" + fields[1] + "'."
 	}
 	return "(" + command + "): ok"
+}
+
+// unbanned returns the identifiers this fake was asked to unban.
+func (f *fakeRCON) unbanned() []string {
+	var out []string
+	for _, command := range f.issued() {
+		fields := strings.Fields(command)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "Unban") {
+			out = append(out, fields[1])
+		}
+	}
+	return out
 }
 
 func (f *fakeRCON) issued() []string {

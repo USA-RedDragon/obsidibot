@@ -1,12 +1,19 @@
-// Package ingest receives the game's PlayerKilled webhook.
+// Package ingest receives the game's PlayerKilled and PlayerCommand webhooks.
 //
-// # What this package is allowed to do
+// # Two routes, two contracts
 //
-// Insert one row. That is all. Elo is ORDER-DEPENDENT -- the same kills applied
-// in a different order produce different ratings -- so ratings are computed by
-// a single writer walking kill_events in id order. If this endpoint ever
-// computed a rating inline, several replicas receiving kills concurrently would
-// each compute a different answer and overwrite each other.
+// The KILL route may only insert one row. That is all. Elo is ORDER-DEPENDENT
+// -- the same kills applied in a different order produce different ratings --
+// so ratings are computed by a single writer walking kill_events in id order.
+// If this endpoint ever computed a rating inline, several replicas receiving
+// kills concurrently would each compute a different answer and overwrite each
+// other.
+//
+// The COMMAND route is the opposite: an RPC, executed now, never queued. A
+// player typing !deposit is standing in game waiting for the whisper; there is
+// no ordering to protect, and a reply delivered minutes later off a queue is
+// worse than no reply at all. The route ACKs immediately and the work runs on
+// the dispatcher's own tracked goroutines -- see internal/gamecmd.
 //
 // # Authentication
 //
@@ -138,6 +145,36 @@ func (p PlayerKilled) CountsDeath() bool {
 	default:
 		return true
 	}
+}
+
+// PlayerCommand is the game's in-game command webhook.
+//
+// The delivery is shaped exactly like a chat line -- the game reuses the chat
+// payload -- and the Message ARRIVES WITH ITS PREFIX ("!balance", not
+// "balance"). Only four fields are declared: bServerAdmin, ChannelId,
+// ChannelName and FromWhisper all arrive and are all dropped by decoding. That
+// is the same rule PlayerKilled follows for coordinates, and it has the same
+// point: a field that does not exist here cannot later be reached for by
+// somebody who does not know why it was left out. Admin status in particular
+// is irrelevant -- the AlderonId IS the identity, and admins bank like anyone
+// else.
+//
+// There is NO event id and no timestamp, so there is nothing to dedupe on.
+// That is fine, and hashing the body would be actively wrong: two identical
+// "!balance" lines a minute apart are two real requests, not a redelivery.
+// Duplicate protection for the operations that need it lives where the state
+// is -- the bank's cooldown and one-in-flight index, and the link reissue
+// cooldown.
+type PlayerCommand struct {
+	ServerGUID string `json:"ServerGuid"`
+	PlayerName string `json:"PlayerName"`
+	AlderonID  string `json:"AlderonId"`
+	Message    string `json:"Message"`
+}
+
+// PlayerID returns the Alderon ID the command came from.
+func (p PlayerCommand) PlayerID() string {
+	return strings.TrimSpace(p.AlderonID)
 }
 
 // KillerID returns the killer's Alderon ID, or "" when nobody killed them.

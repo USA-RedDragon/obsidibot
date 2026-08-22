@@ -24,3 +24,24 @@ update guild_config
    set leaderboard_message_id = $2,
        updated_at             = now()
  where guild_id = $1;
+
+-- name: SetModRole :exec
+insert into guild_config (guild_id, mod_role_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set mod_role_id = excluded.mod_role_id,
+        updated_at  = now();
+
+-- name: SetBanFeedChannel :exec
+insert into guild_config (guild_id, ban_feed_channel_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set ban_feed_channel_id = excluded.ban_feed_channel_id,
+        updated_at          = now();
+
+-- name: SetWarnFeedChannel :exec
+insert into guild_config (guild_id, warn_feed_channel_id, updated_at)
+values ($1, $2, now())
+on conflict (guild_id) do update
+    set warn_feed_channel_id = excluded.warn_feed_channel_id,
+        updated_at           = now();

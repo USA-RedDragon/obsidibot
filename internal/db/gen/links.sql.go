@@ -24,15 +24,6 @@ func (q *Queries) CreateLink(ctx context.Context, arg CreateLinkParams) error {
 	return err
 }
 
-const deleteChallenge = `-- name: DeleteChallenge :exec
-delete from link_challenges where discord_user_id = $1
-`
-
-func (q *Queries) DeleteChallenge(ctx context.Context, discordUserID string) error {
-	_, err := q.db.Exec(ctx, deleteChallenge, discordUserID)
-	return err
-}
-
 const deleteChallengeByAlderonID = `-- name: DeleteChallengeByAlderonID :exec
 delete from link_challenges where alderon_id = $1
 `
@@ -40,6 +31,22 @@ delete from link_challenges where alderon_id = $1
 func (q *Queries) DeleteChallengeByAlderonID(ctx context.Context, alderonID string) error {
 	_, err := q.db.Exec(ctx, deleteChallengeByAlderonID, alderonID)
 	return err
+}
+
+const deleteChallengeByDiscordID = `-- name: DeleteChallengeByDiscordID :execrows
+delete from link_challenges where discord_user_id = $1
+`
+
+// DeleteChallengeByDiscordID clears the caller's previous challenge before a
+// new one is opened against a DIFFERENT identity: unique(discord_user_id)
+// would otherwise refuse the upsert. Run in the same transaction as the
+// upsert it clears the way for.
+func (q *Queries) DeleteChallengeByDiscordID(ctx context.Context, discordUserID *string) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteChallengeByDiscordID, discordUserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteExpiredChallenges = `-- name: DeleteExpiredChallenges :execrows
@@ -66,16 +73,35 @@ func (q *Queries) DeleteLinkByDiscordID(ctx context.Context, discordUserID strin
 	return result.RowsAffected(), nil
 }
 
-const getChallenge = `-- name: GetChallenge :one
-select discord_user_id, alderon_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges where discord_user_id = $1
+const getChallengeByAlderonID = `-- name: GetChallengeByAlderonID :one
+select alderon_id, discord_user_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges where alderon_id = $1
 `
 
-func (q *Queries) GetChallenge(ctx context.Context, discordUserID string) (LinkChallenge, error) {
-	row := q.db.QueryRow(ctx, getChallenge, discordUserID)
+func (q *Queries) GetChallengeByAlderonID(ctx context.Context, alderonID string) (LinkChallenge, error) {
+	row := q.db.QueryRow(ctx, getChallengeByAlderonID, alderonID)
 	var i LinkChallenge
 	err := row.Scan(
-		&i.DiscordUserID,
 		&i.AlderonID,
+		&i.DiscordUserID,
+		&i.PlayerName,
+		&i.CodeHash,
+		&i.Attempts,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
+const getChallengeByDiscordID = `-- name: GetChallengeByDiscordID :one
+select alderon_id, discord_user_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges where discord_user_id = $1
+`
+
+func (q *Queries) GetChallengeByDiscordID(ctx context.Context, discordUserID *string) (LinkChallenge, error) {
+	row := q.db.QueryRow(ctx, getChallengeByDiscordID, discordUserID)
+	var i LinkChallenge
+	err := row.Scan(
+		&i.AlderonID,
+		&i.DiscordUserID,
 		&i.PlayerName,
 		&i.CodeHash,
 		&i.Attempts,
@@ -108,20 +134,19 @@ func (q *Queries) GetLinkByDiscordID(ctx context.Context, discordUserID string) 
 }
 
 const getLiveChallengeByAlderonID = `-- name: GetLiveChallengeByAlderonID :one
-select discord_user_id, alderon_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges
- where alderon_id = $1 and expires_at > now()
+select alderon_id, discord_user_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges where alderon_id = $1 and expires_at > now()
 `
 
-// GetLiveChallengeByAlderonID finds an unexpired challenge for an identity,
-// whoever started it. It is what stops one Discord user repeatedly issuing
-// challenges against somebody else's account: each attempt whispers a code to
-// that player in game, and without this the command is a spam button.
+// GetLiveChallengeByAlderonID backs /link start's stomp-guard: without it,
+// naming somebody else's identity would replace their pending challenge and
+// whisper them a fresh code -- a spam button pointed at whoever the caller
+// names.
 func (q *Queries) GetLiveChallengeByAlderonID(ctx context.Context, alderonID string) (LinkChallenge, error) {
 	row := q.db.QueryRow(ctx, getLiveChallengeByAlderonID, alderonID)
 	var i LinkChallenge
 	err := row.Scan(
-		&i.DiscordUserID,
 		&i.AlderonID,
+		&i.DiscordUserID,
 		&i.PlayerName,
 		&i.CodeHash,
 		&i.Attempts,
@@ -134,43 +159,82 @@ func (q *Queries) GetLiveChallengeByAlderonID(ctx context.Context, alderonID str
 const incrementChallengeAttempts = `-- name: IncrementChallengeAttempts :one
 update link_challenges
    set attempts = attempts + 1
- where discord_user_id = $1
+ where alderon_id = $1
 returning attempts
 `
 
-func (q *Queries) IncrementChallengeAttempts(ctx context.Context, discordUserID string) (int32, error) {
-	row := q.db.QueryRow(ctx, incrementChallengeAttempts, discordUserID)
+func (q *Queries) IncrementChallengeAttempts(ctx context.Context, alderonID string) (int32, error) {
+	row := q.db.QueryRow(ctx, incrementChallengeAttempts, alderonID)
 	var attempts int32
 	err := row.Scan(&attempts)
 	return attempts, err
 }
 
+const listUnclaimedLiveChallenges = `-- name: ListUnclaimedLiveChallenges :many
+select alderon_id, discord_user_id, player_name, code_hash, attempts, created_at, expires_at from link_challenges where discord_user_id is null and expires_at > now()
+`
+
+// ListUnclaimedLiveChallenges is /link confirm's fallback for in-game-
+// initiated links: no Discord user owns them, so the code itself is the claim.
+// Bounded by players online, not by table growth -- expired rows are excluded
+// here and swept separately.
+func (q *Queries) ListUnclaimedLiveChallenges(ctx context.Context) ([]LinkChallenge, error) {
+	rows, err := q.db.Query(ctx, listUnclaimedLiveChallenges)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LinkChallenge
+	for rows.Next() {
+		var i LinkChallenge
+		if err := rows.Scan(
+			&i.AlderonID,
+			&i.DiscordUserID,
+			&i.PlayerName,
+			&i.CodeHash,
+			&i.Attempts,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const upsertChallenge = `-- name: UpsertChallenge :exec
-insert into link_challenges (discord_user_id, alderon_id, player_name, code_hash, expires_at)
+insert into link_challenges (alderon_id, discord_user_id, player_name, code_hash, expires_at)
 values ($1, $2, $3, $4, $5)
-on conflict (discord_user_id) do update
-    set alderon_id  = excluded.alderon_id,
-        player_name = excluded.player_name,
-        code_hash   = excluded.code_hash,
-        attempts    = 0,
-        created_at  = now(),
-        expires_at  = excluded.expires_at
+on conflict (alderon_id) do update
+    set discord_user_id = excluded.discord_user_id,
+        player_name     = excluded.player_name,
+        code_hash       = excluded.code_hash,
+        attempts        = 0,
+        created_at      = now(),
+        expires_at      = excluded.expires_at
 `
 
 type UpsertChallengeParams struct {
-	DiscordUserID string
 	AlderonID     string
+	DiscordUserID *string
 	PlayerName    string
 	CodeHash      []byte
 	ExpiresAt     time.Time
 }
 
-// UpsertChallenge replaces any challenge the caller already had, so running
-// /link start twice simply reissues rather than erroring.
+// UpsertChallenge opens or replaces the challenge for an identity. The
+// conflict target is the IDENTITY being claimed, not the claimant: an in-game
+// !link has no Discord user yet (discord_user_id null = unclaimed), and the
+// person in game is the identity's authority, so their reissue replaces even a
+// Discord-initiated challenge for the same AGID.
 func (q *Queries) UpsertChallenge(ctx context.Context, arg UpsertChallengeParams) error {
 	_, err := q.db.Exec(ctx, upsertChallenge,
-		arg.DiscordUserID,
 		arg.AlderonID,
+		arg.DiscordUserID,
 		arg.PlayerName,
 		arg.CodeHash,
 		arg.ExpiresAt,

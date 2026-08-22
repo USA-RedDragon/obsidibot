@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SRS-Hosting/rcon"
 	"github.com/USA-RedDragon/obsidibot/internal/bank"
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
@@ -304,6 +305,67 @@ func TestAClaimedRowIsNotClosedAsAbandoned(t *testing.T) {
 	if row := h.state(t, second); row.State != gen.BankStateInFlight {
 		t.Fatalf("a row that had just been claimed was closed as %s, on a reading that "+
 			"was already stale when it was acted on", row.State)
+	}
+}
+
+// TestALibraryRefusalClosesTheRowAsFailed covers rcon's fail-fast errors: a
+// full command queue or an over-long command is refused by the library BEFORE
+// any network activity, so nothing can have moved in game. Classifying those
+// as unconfirmed used to park the row as needs_review -- firing the
+// operator alert, whose entire value is that it only fires when marks may
+// actually be wrong -- for a transfer that provably never left the process.
+// With in-game commands sharing the RCON connection, ErrBusy becomes
+// player-triggerable at will, so the misclassification would be routine.
+// Both directions are covered, because they issue DIFFERENT verbs -- a deposit
+// removes marks in game, a withdraw adds them -- and the classification must
+// not be accidentally tied to one of them.
+func TestALibraryRefusalClosesTheRowAsFailed(t *testing.T) {
+	tests := map[string]struct {
+		refusal   error
+		direction gen.BankDirection
+		verb      string
+		// wantBalance is the bank balance afterwards: unchanged in both cases,
+		// which for a withdraw means the 400 seeded to have something to take.
+		wantBalance int64
+	}{
+		"busy on deposit":      {rcon.ErrBusy, gen.BankDirectionDeposit, "RemoveMarks", 0},
+		"too long on withdraw": {rcon.ErrCommandTooLong, gen.BankDirectionWithdraw, "AddMarks", 400},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.rcon.reject[tc.verb] = tc.refusal
+			ctx := context.Background()
+
+			var err error
+			if tc.direction == gen.BankDirectionDeposit {
+				_, err = h.vault.Deposit(ctx, "d1", testAGID, "", 400)
+			} else {
+				// Something to withdraw, or the request is refused before a
+				// command is ever attempted.
+				if cerr := h.store.Queries().CreditBank(ctx, gen.CreditBankParams{
+					AlderonID: testAGID, Balance: 400,
+				}); cerr != nil {
+					t.Fatalf("credit: %v", cerr)
+				}
+				_, err = h.vault.Withdraw(ctx, "d1", testAGID, "", 400)
+			}
+			if !errors.Is(err, tc.refusal) {
+				t.Fatalf("err = %v, want the refusal itself so the caller can say 'try again'", err)
+			}
+
+			row := h.onlyRow(t)
+			if row.State != gen.BankStateFailed {
+				t.Fatalf("state = %s, want failed: a provably-unsent command was left for review", row.State)
+			}
+			if h.balance(t) != tc.wantBalance {
+				t.Errorf("balance = %d, want %d: the refusal moved a balance", h.balance(t), tc.wantBalance)
+			}
+			if got := h.counted(t, tc.direction, metrics.ResultUserError); got != 1 {
+				t.Errorf("refusals counted as user error = %v, want 1", got)
+			}
+		})
 	}
 }
 

@@ -5,19 +5,28 @@
 Discord bot for the **Obsidian Wilds** Path of Titans server.
 
 It links Discord accounts to in-game identities, tracks kills into an Elo rating
-and a live leaderboard, and banks marks on players' behalf over RCON.
+and a live leaderboard, banks marks on players' behalf over RCON, answers `!`
+commands typed in game chat, and runs warnings and time-limited game bans for
+moderators.
 
 ## What it does
 
 - **`/link`** — binds a Discord account to an Alderon ID by whispering a
   one-time code **into the game**. The code never appears in Discord, and only
   its SHA-256 is stored, so neither database access nor a leaked reply lets
-  anyone claim somebody else's identity.
+  anyone claim somebody else's identity. Works from either end: `/link start`
+  in Discord, or `!link` typed in game chat.
 - **Kill tracking** — ingests the game's `PlayerKilled` webhook, keeps per-player
   kills, deaths and an Elo rating, posts a kill feed, and maintains a persistent
   top-20 leaderboard message that is edited in place.
 - **Banking** — `/deposit` and `/withdraw` move marks between the dinosaur a
-  player is currently controlling and a Discord-side balance.
+  player is currently controlling and a Discord-side balance. The same
+  operations work as `!deposit`/`!withdraw`/`!balance` typed in game chat, with
+  replies whispered back — no link required, because the game itself vouches
+  for who is typing.
+- **Moderation** — role-gated `/warn` and `/ban` (with `1d3h43m`-style
+  durations) recorded against a player's identity, enforced in game over RCON,
+  posted to warn/ban feed channels, and lifted automatically when they expire.
 
 ## How it is put together
 
@@ -33,7 +42,7 @@ is automatic.
 | Listener | Default port | Routes | Exposure |
 | --- | --- | --- | --- |
 | `interactions` | 8080 | `POST /`, `GET /healthz`, `GET /readyz` | **Public.** Discord posts signed interactions here |
-| `ingest` | 8081 | `POST /webhooks/pot/<secret>/killed` | **Cluster-internal only.** The game server posts webhooks here |
+| `ingest` | 8081 | `POST /webhooks/pot/<secret>/killed`, `POST /webhooks/pot/<secret>/command` | **Cluster-internal only.** The game server posts webhooks here |
 | `metrics` | 9090 | `GET /metrics` | Internal |
 | `pprof` | 6060 | `/debug/pprof/...` | Internal, disabled by default |
 
@@ -126,12 +135,22 @@ Once the bot is up, someone with **Manage Server** runs:
 ```
 /config kill-channel        #kill-feed
 /config leaderboard-channel #leaderboard
+/config ban-channel         #ban-feed
+/config warn-channel        #warn-feed
+/config mod-role            @Moderators
 /config show
 ```
 
 These live in the database, not in obsidibot's config file, so a moderator can
 move the feed without a redeploy. Changing the leaderboard channel makes the bot
 post a fresh message there within one refresh interval.
+
+`mod-role` is who may run `/warn`, `/ban`, `/unban` and `/modstats`. Anyone
+with **Manage Server** always may — that is the bootstrap, or nobody could set
+the role in the first place — but `/config` itself stays Manage Server only, so
+holding the mod role does not let someone move the gate. The ban and warn feeds
+are optional: unset, the actions still happen and are still recorded, they are
+just not announced.
 
 ## Game server setup
 
@@ -158,7 +177,20 @@ it, `/link`, `/deposit` and `/withdraw` do not work; kill tracking still does.
 bEnabled=True
 Format="General"
 PlayerKilled="http://obsidibot.example.internal:8081/webhooks/pot/<INGEST_SECRET>/killed"
+PlayerCommand="http://obsidibot.example.internal:8081/webhooks/pot/<INGEST_SECRET>/command"
 ```
+
+`PlayerCommand` is what makes the in-game `!` commands work: the game POSTs
+every chat line starting with `!` to that URL (invisibly to other players), and
+obsidibot whispers the reply back over RCON. Without it, `!link`, `!deposit`,
+`!withdraw` and `!balance` silently do nothing; everything else is unaffected.
+
+**Upgrading from a version without in-game commands? Roll out the new bot to
+every replica BEFORE adding the `PlayerCommand` line.** The first `!link`
+creates a challenge row no Discord user owns yet, and old replicas cannot read
+those rows — their `/link start` breaks on them. No such row can exist until
+the game starts sending `PlayerCommand`, so the webhook going in last makes the
+ordering safe.
 
 Three things to know:
 
@@ -332,12 +364,43 @@ trading kills net out near zero.
 | `/deposit [amount]` | linked | Marks from your dinosaur into the bank. Omit the amount for all of it |
 | `/withdraw [amount]` | linked | Marks from the bank onto your dinosaur |
 | `/balance` | linked | What you have banked |
+| `/warn reason:<text> user:@x \| player:<AGID or name>` | mod role / Manage Server | Records a warning, whispers the target if online, posts to the warn feed |
+| `/ban reason:<text> user:@x \| player:<AGID or name> [duration:1d3h43m]` | mod role / Manage Server | Records a ban, kicks + bans in game, posts to the ban feed. No duration = permanent |
+| `/unban user:@x \| player:<AGID or name> [reason]` | mod role / Manage Server | Lifts the game ban, then closes the record |
+| `/modstats user:@x \| player:<AGID or name>` | mod role / Manage Server | Counts, active ban and recent history for one player |
 | `/config kill-channel <channel>` | Manage Server | |
 | `/config leaderboard-channel <channel>` | Manage Server | |
+| `/config ban-channel <channel>` | Manage Server | |
+| `/config warn-channel <channel>` | Manage Server | |
+| `/config mod-role <role>` | Manage Server | |
 | `/config show` | Manage Server | |
+
+`/warn` and `/ban` target **either** a Discord user **or** an in-game identity
+— exactly one. A player warned by Alderon ID before linking and by @mention
+after is one person with one record; the two halves merge through the link.
+Banning an unlinked @user is recorded but cannot reach the game until they
+link; the reply says so, and enforcement happens automatically the moment a
+link appears.
 
 Banking requires being **in game**: marks live on the character you are
 controlling, so there is nothing to read or move while you are logged out.
+
+### In game
+
+Typed in game chat; replies arrive as whispers only you can see. Other players
+never see the command either — the game does not broadcast `!` lines.
+
+| Command | What |
+| --- | --- |
+| `!link` | Whispers a link code for this character. Bring it to `/link confirm` in Discord. Do not share it — whoever enters it gets the link |
+| `!deposit [amount]` | Marks from this dinosaur into the bank. Omit the amount, or say `all`, for everything |
+| `!withdraw [amount]` | Marks from the bank onto this dinosaur |
+| `!balance` | Banked balance, and this dinosaur's marks |
+| `!help` | The list above, whispered |
+
+No link is needed for in-game banking: the game itself vouches for who is
+typing, and the balance lives against the Alderon ID either way. Whatever you
+bank before linking is already yours when you later link.
 
 ### What counts
 
@@ -378,6 +441,37 @@ leaving `@everyone` denied, which keeps the channel read-only for members. If it
 cannot post, it says so once every five minutes and keeps the backlog rather
 than retrying every second; kills are never dropped and appear as soon as the
 permission is granted.
+
+### Moderation and bans
+
+The database row is the ban; the game is brought into line with it. A
+scheduler on one replica enforces recorded bans (kick, then ban — the ban
+alone blocks rejoining, the kick is what shows the player the reason), lifts
+them when they expire, and re-asserts every active ban hourly so a wiped or
+restored `Bans.txt` heals itself.
+
+Four things worth knowing:
+
+- **The game's own timed bans are never used.** `Ban <id> <time>` writes a
+  corrupt `Bans.txt` row that binds nobody and cannot be lifted — verified
+  against the live server. obsidibot always issues permanent game bans and
+  owns the expiry itself, which is also why a ban survives the server's
+  periodic restarts.
+- **The game refuses to ban a server admin** (`ServerAdmins` in `Game.ini`),
+  and no RCON command changes that. Such a ban is recorded, marked
+  unenforceable, shown as such in `/modstats`, and never uselessly retried.
+  To enforce it: remove them from `ServerAdmins`, restart, and `/unban` +
+  re-`/ban` (or wait for the hourly re-assertion to pick the row up after
+  clearing the flag).
+- **The one unliftable edge:** a `Bans.txt` row for someone currently in
+  `ServerAdmins` (hand-edited file, or banned then promoted) locks them out,
+  but RCON can neither place nor lift it. If an expiry closes with lift reason
+  `expired; game reported no liftable ban` and the player is still locked out,
+  edit `Bans.txt` by hand — remove their line — and run `ReloadBans`.
+- **A banned player cannot be in game**, so their `!` commands and Discord
+  `/deposit`/`/withdraw` all fail with "you need to be logged in", while
+  `/balance` still answers. That is coherent, not a bug: their marks are
+  safe and waiting.
 
 ### Probes
 
@@ -428,9 +522,17 @@ alerting on:
 - **`obsidibot_kill_feed_backlog`** — the feed is lossless, so a Discord outage
   makes this grow rather than dropping kills. Sustained growth means it is not
   draining.
+- **`obsidibot_moderation_unenforced_bans` — alert on sustained nonzero.** An
+  active ban the game is not yet enforcing: the target has never linked, RCON
+  is failing, or the scheduler is behind. A banned player who can still join
+  is invisible otherwise. (Bans already flagged unenforceable — admin targets
+  — are excluded; those are surfaced in `/modstats` instead, because a gauge
+  that is permanently red trains people to ignore it.)
 
 Also useful: `obsidibot_leaderboard_last_success_timestamp_seconds` for
-staleness, and `obsidibot_rcon_commands_total{command,result}`.
+staleness, `obsidibot_rcon_commands_total{command,result}`,
+`obsidibot_game_commands_total{command,result}` for the in-game `!` commands,
+and `obsidibot_moderation_actions_total{kind,result}`.
 
 No metric is ever labelled with a Discord user id, an Alderon ID or a player
 name. Player churn would otherwise become an unbounded set of time series.

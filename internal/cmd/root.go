@@ -19,11 +19,13 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/commands"
 	"github.com/USA-RedDragon/obsidibot/internal/config"
 	"github.com/USA-RedDragon/obsidibot/internal/db"
+	"github.com/USA-RedDragon/obsidibot/internal/gamecmd"
 	"github.com/USA-RedDragon/obsidibot/internal/ingest"
 	"github.com/USA-RedDragon/obsidibot/internal/interactions"
 	"github.com/USA-RedDragon/obsidibot/internal/kills"
 	"github.com/USA-RedDragon/obsidibot/internal/leader"
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
+	"github.com/USA-RedDragon/obsidibot/internal/moderation"
 	"github.com/USA-RedDragon/obsidibot/internal/pot"
 	obsidipprof "github.com/USA-RedDragon/obsidibot/internal/pprof"
 	"github.com/bwmarrin/discordgo"
@@ -239,6 +241,10 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 		return err
 	}
 
+	// The in-game commands share the bank with the slash commands on purpose:
+	// one ledger, one set of at-most-once guarantees, two frontends.
+	gameCommands := gamecmd.New(store, game, vault, m, cfg)
+
 	// Single-writer background jobs. Each holds its own advisory lock, so N
 	// replicas can run and exactly one does each job. The rating applier is the
 	// strict case -- Elo is order-dependent -- and the rest would merely
@@ -253,6 +259,10 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 		"leaderbd": board.New(store, session, m, cfg, self.guildID).Run,
 		"decay":    kills.NewDecayer(store, cfg).Run,
 		"prune":    kills.NewPruner(store, cfg).Run,
+		// One writer, because it issues RCON commands off database state: two
+		// replicas enforcing the same ban would kick a player twice and race
+		// each other's enforced_at.
+		"modsched": moderation.NewScheduler(store, game, session, m, self.guildID).Run,
 	}
 	if err := checkPoolCapacity(store.MaxConns(), len(singletons)); err != nil {
 		return err
@@ -275,7 +285,10 @@ func serve(ctx context.Context, cfg *config.Config, migrations fs.FS, opts ...Op
 		return router.Serve(ctx, cfg.Interactions.Bind, cfg.Interactions.Port, ready)
 	})
 	group.Go(func() error {
-		return ingest.New(store, m, cfg, self.serverGUID).Serve(ctx, cfg.Ingest.Bind, cfg.Ingest.Port)
+		// Serve blocks until the dispatched in-game commands have finished, so
+		// this returning is what makes it safe for store.Close to run.
+		return ingest.New(store, m, cfg, self.serverGUID, gameCommands).
+			Serve(ctx, cfg.Ingest.Bind, cfg.Ingest.Port)
 	})
 	if cfg.Metrics.Enabled {
 		group.Go(func() error {
@@ -346,9 +359,18 @@ func discoverIdentity(ctx context.Context, session *discordgo.Session, game *pot
 }
 
 // poolHeadroom is how many pooled connections must remain free once every
-// singleton job is running: one for the interaction being answered, one for the
-// kill webhook that arrives while it is, one for /readyz, and one spare so a
-// slow query does not make those three queue behind each other.
+// singleton job is running.
+//
+// The traffic it covers is no longer one request at a time: an interaction
+// being answered, the kill webhook that arrives while it is, /readyz, the bank
+// reconciler sweeping on every replica, and up to four in-game command workers
+// dispatched from the PlayerCommand route. That is more concurrent users than
+// four -- deliberately. Connections are held per QUERY here, not per worker or
+// per request: nothing in this process keeps one across an RCON round trip,
+// which is the only thing slow enough to matter. Four free connections
+// therefore covers considerably more than four callers, and the value is a
+// floor against a pool sized to the jobs alone rather than a model of peak
+// concurrency.
 const poolHeadroom = 4
 
 // checkPoolCapacity refuses to boot with a pool too small to serve the jobs and
@@ -380,13 +402,15 @@ func buildRouter(store *db.Store, game *pot.Client, vault *bank.Bank,
 	session *discordgo.Session, m *metrics.Metrics, cfg *config.Config,
 ) (*interactions.Router, error) {
 	banking := commands.NewBanker(store, vault, cfg).Commands()
-	commandSet := make([]interactions.Command, 0, 3+len(banking))
+	moderating := commands.NewModeration(store, game, session, m).Commands()
+	commandSet := make([]interactions.Command, 0, 3+len(banking)+len(moderating))
 	commandSet = append(commandSet,
 		commands.NewLinker(store, game, cfg).Command(),
 		commands.NewStats(store).Command(),
 		commands.NewConfig(store).Command(),
 	)
 	commandSet = append(commandSet, banking...)
+	commandSet = append(commandSet, moderating...)
 
 	return interactions.NewRouter(cfg.Discord.PublicKey, session, m, commandSet)
 }
