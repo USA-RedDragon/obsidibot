@@ -76,7 +76,10 @@ type PlayerKilled struct {
 	// The game reports -1 when there was no killer.
 	KillDistance float64 `json:"KillDistance"`
 
-	// TimeOfDay is the in-world clock: 1411 is 14:11.
+	// TimeOfDay is the in-world clock in HUNDREDTHS OF AN HOUR, not HHMM:
+	// 1489 is 14.89 hours, i.e. 14:53. Reading it as HHMM renders impossible
+	// times -- 14 of the first 46 live events had a minutes field of 60 or
+	// more, and 1779 displayed as "17:79".
 	TimeOfDay int `json:"TimeOfDay"`
 
 	// The coordinates. Captured so the feed can render them WHEN ASKED, behind
@@ -92,11 +95,19 @@ type PlayerKilled struct {
 //
 //   - DamageType must be DT_ATTACK. Starving to death is a death, but nobody
 //     killed you.
-//   - There must be a killer. An environmental death names none.
-//   - The killer must not be the victim. Self-kills would otherwise let anyone
-//     mint rated games against themselves.
-//   - The killer must not be an admin. Admins moderate and test; neither should
-//     move the board.
+//   - There must be a killer.
+//   - The killer must not be the victim. An environmental death names the
+//     VICTIM as their own killer -- verified live: thirst, falls and impacts
+//     all arrive that way, with kill_distance 0 -- so this is the arm that
+//     keeps the world from earning rating points.
+//
+// # Why an admin's kill counts
+//
+// It did not, until it was noticed that the game has a SEPARATE admin kill
+// function which does not name the admin as killer at all. So an event that
+// does name them is not moderation: it is an admin playing the game and
+// killing somebody, and excluding it discarded half the recorded history.
+// The distinction we were trying to draw is one the game already draws for us.
 //
 // Whether a DEATH is recorded is a separate question -- see CountsDeath.
 func (p PlayerKilled) Credited() bool {
@@ -108,8 +119,6 @@ func (p PlayerKilled) Credited() bool {
 		return false
 	case killer == strings.TrimSpace(p.VictimAlderonID):
 		return false
-	case p.KillerIsAdmin:
-		return false
 	default:
 		return true
 	}
@@ -117,34 +126,37 @@ func (p PlayerKilled) Credited() bool {
 
 // CountsDeath reports whether this event counts against the victim's K/D.
 //
-// It is deliberately NOT the same question as Credited, because three things
-// are being decided about one event and they do not coincide:
+// It is true for every event, and that is not laziness: the webhook fires when
+// a player is killed, so the event IS a death by construction. Dying of thirst
+// counts because surviving is part of playing; being killed counts for the
+// obvious reason.
 //
-//   - The kill feed shows every event. It happened; people want to see it.
-//   - Elo moves only on a credited kill.
-//   - K/D counts a death unless the death was somebody else's doing in a way
-//     the victim could not play around.
-//
-// So: dying of thirst counts, because surviving is part of playing, even though
-// it moves no rating -- there is no counterparty to take the points, and
+// It is still a SEPARATE question from Credited, and still its own function,
+// because the two answers genuinely differ -- an environmental death is a death
+// that moves no rating, since there is no counterparty to take the points and
 // inventing one would drain a zero-sum system and deflate every rating over
-// time. Being killed by an ADMIN does not count: an admin moderating a fight
-// should not dent the record of whoever they stop. A SELF-KILL does not count
-// either, or a player could farm their own K/D in reverse to no purpose and
-// the number would stop meaning anything.
+// time.
+//
+// # What used to be excluded, and why it no longer is
+//
+// Admin kills were excluded to stop moderation denting a player's record. The
+// game turns out to have a separate admin kill function that names no killer,
+// so the exclusion never described moderation -- it discarded ordinary kills.
+//
+// Self-kills were excluded to stop K/D farming. That threat was never real in
+// this direction: a death only ever hurts the victim's own ratio, so there is
+// nothing to farm. Meanwhile the exclusion was swallowing every thirst, fall
+// and impact death, because those name the victim as their own killer.
+//
+// # Where an exclusion would go if one is ever needed
+//
+// Four events (ids 1, 2, 6, 33) arrive with NO killer at all and DT_GENERIC.
+// They are not fall damage. If they turn out to be the admin kill function and
+// a cleanup should not dent a record, this is the function that would say so --
+// which is why it survives as a function rather than collapsing into its
+// caller.
 func (p PlayerKilled) CountsDeath() bool {
-	killer := strings.TrimSpace(p.KillerAlderonID)
-	switch {
-	case killer == "":
-		// Nobody killed them: the world did, and that counts.
-		return true
-	case killer == strings.TrimSpace(p.VictimAlderonID):
-		return false
-	case p.KillerIsAdmin:
-		return false
-	default:
-		return true
-	}
+	return true
 }
 
 // PlayerCommand is the game's in-game command webhook.

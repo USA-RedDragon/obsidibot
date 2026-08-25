@@ -10,6 +10,64 @@ import (
 	"time"
 )
 
+const claimRatingReplay = `-- name: ClaimRatingReplay :one
+update rating_replays
+   set completed_at = now()
+ where id = (select id from rating_replays
+              where completed_at is null
+              order by id
+              limit 1)
+returning id, reason, min_event_id
+`
+
+type ClaimRatingReplayRow struct {
+	ID         int64
+	Reason     string
+	MinEventID *int64
+}
+
+// ClaimRatingReplay takes ownership of a pending replay, if there is one.
+//
+// THIS IS THE MUTUAL EXCLUSION for the whole replay, and it does not need an
+// advisory lock on top. internal/leader hands out no fencing token, so a
+// zombie leader can still believe it leads; two of them reaching here take the
+// row lock in turn, and the loser re-evaluates `completed_at is null` after
+// the winner commits, matches nothing, and skips. Stamping completion at CLAIM
+// time rather than afterwards is what makes that work.
+//
+// An advisory lock keyed like the ratings job would be worse than useless: the
+// leader already holds that key as a session lock on its own connection, so a
+// pooled transaction asking for it would wait on its own process forever.
+func (q *Queries) ClaimRatingReplay(ctx context.Context) (ClaimRatingReplayRow, error) {
+	row := q.db.QueryRow(ctx, claimRatingReplay)
+	var i ClaimRatingReplayRow
+	err := row.Scan(&i.ID, &i.Reason, &i.MinEventID)
+	return i, err
+}
+
+const countPlayerHistory = `-- name: CountPlayerHistory :one
+select count(*) from (
+    select k.id from kill_events k
+     where k.killer_agid = $1 and k.id <= $2
+    union all
+    select k.id from kill_events k
+     where k.victim_agid = $1 and k.id <= $2
+       and k.killer_agid is distinct from $1
+) timeline
+`
+
+type CountPlayerHistoryParams struct {
+	Agid  *string
+	MaxID int64
+}
+
+func (q *Queries) CountPlayerHistory(ctx context.Context, arg CountPlayerHistoryParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countPlayerHistory, arg.Agid, arg.MaxID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnpostedEvents = `-- name: CountUnpostedEvents :one
 select count(*) from kill_events where not posted
 `
@@ -126,57 +184,110 @@ func (q *Queries) MarkEventPosted(ctx context.Context, id int64) error {
 }
 
 const markEventRated = `-- name: MarkEventRated :exec
-update kill_events set rated = true where id = $1
+update kill_events
+   set rated                = true,
+       killer_rating_before = $2,
+       killer_rating_after  = $3,
+       victim_rating_before = $4,
+       victim_rating_after  = $5
+ where id = $1
 `
 
-func (q *Queries) MarkEventRated(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, markEventRated, id)
+type MarkEventRatedParams struct {
+	ID                 int64
+	KillerRatingBefore *float64
+	KillerRatingAfter  *float64
+	VictimRatingBefore *float64
+	VictimRatingAfter  *float64
+}
+
+// MarkEventRated closes an event and records what it did to both ratings.
+//
+// The four figures are stored rather than recomputed because the feed and
+// /stats need to show the Elo a kill moved, and only the applier -- walking the
+// events in order -- ever knows it. They are null for an event that moved
+// nothing.
+func (q *Queries) MarkEventRated(ctx context.Context, arg MarkEventRatedParams) error {
+	_, err := q.db.Exec(ctx, markEventRated,
+		arg.ID,
+		arg.KillerRatingBefore,
+		arg.KillerRatingAfter,
+		arg.VictimRatingBefore,
+		arg.VictimRatingAfter,
+	)
 	return err
+}
+
+const maxEventID = `-- name: MaxEventID :one
+select coalesce(max(id), 0)::bigint from kill_events
+`
+
+func (q *Queries) MaxEventID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, maxEventID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const minEventID = `-- name: MinEventID :one
+select coalesce(min(id), 0)::bigint from kill_events
+`
+
+func (q *Queries) MinEventID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, minEventID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const nextUnpostedEvents = `-- name: NextUnpostedEvents :many
 select id, received_at, server_guid,
        victim_agid, victim_name, victim_dino, victim_growth, victim_poi,
-       victim_character, victim_role, victim_location, victim_is_admin, victim_is_admin,
+       victim_character, victim_role, victim_location, victim_is_admin,
        killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin,
        killer_character, killer_role, killer_location,
        damage_type, credited, counts_death, kill_distance, time_of_day,
+       killer_rating_before, killer_rating_after,
+       victim_rating_before, victim_rating_after,
        rated, posted
   from kill_events
- where not posted
+ where not posted and rated
  order by id
  limit $1
 `
 
 type NextUnpostedEventsRow struct {
-	ID              int64
-	ReceivedAt      time.Time
-	ServerGuid      string
-	VictimAgid      string
-	VictimName      string
-	VictimDino      *string
-	VictimGrowth    *float64
-	VictimPoi       *string
-	VictimCharacter *string
-	VictimRole      *string
-	VictimLocation  *string
-	VictimIsAdmin   bool
-	VictimIsAdmin_2 bool
-	KillerAgid      *string
-	KillerName      *string
-	KillerDino      *string
-	KillerGrowth    *float64
-	KillerIsAdmin   bool
-	KillerCharacter *string
-	KillerRole      *string
-	KillerLocation  *string
-	DamageType      string
-	Credited        bool
-	CountsDeath     bool
-	KillDistance    *float64
-	TimeOfDay       *int32
-	Rated           bool
-	Posted          bool
+	ID                 int64
+	ReceivedAt         time.Time
+	ServerGuid         string
+	VictimAgid         string
+	VictimName         string
+	VictimDino         *string
+	VictimGrowth       *float64
+	VictimPoi          *string
+	VictimCharacter    *string
+	VictimRole         *string
+	VictimLocation     *string
+	VictimIsAdmin      bool
+	KillerAgid         *string
+	KillerName         *string
+	KillerDino         *string
+	KillerGrowth       *float64
+	KillerIsAdmin      bool
+	KillerCharacter    *string
+	KillerRole         *string
+	KillerLocation     *string
+	DamageType         string
+	Credited           bool
+	CountsDeath        bool
+	KillDistance       *float64
+	TimeOfDay          *int32
+	KillerRatingBefore *float64
+	KillerRatingAfter  *float64
+	VictimRatingBefore *float64
+	VictimRatingAfter  *float64
+	Rated              bool
+	Posted             bool
 }
 
 func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]NextUnpostedEventsRow, error) {
@@ -201,7 +312,6 @@ func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]NextUn
 			&i.VictimRole,
 			&i.VictimLocation,
 			&i.VictimIsAdmin,
-			&i.VictimIsAdmin_2,
 			&i.KillerAgid,
 			&i.KillerName,
 			&i.KillerDino,
@@ -215,6 +325,10 @@ func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]NextUn
 			&i.CountsDeath,
 			&i.KillDistance,
 			&i.TimeOfDay,
+			&i.KillerRatingBefore,
+			&i.KillerRatingAfter,
+			&i.VictimRatingBefore,
+			&i.VictimRatingAfter,
 			&i.Rated,
 			&i.Posted,
 		); err != nil {
@@ -231,10 +345,12 @@ func (q *Queries) NextUnpostedEvents(ctx context.Context, limit int32) ([]NextUn
 const nextUnratedEvents = `-- name: NextUnratedEvents :many
 select id, received_at, server_guid,
        victim_agid, victim_name, victim_dino, victim_growth, victim_poi,
-       victim_character, victim_role, victim_location, victim_is_admin, victim_is_admin,
+       victim_character, victim_role, victim_location, victim_is_admin,
        killer_agid, killer_name, killer_dino, killer_growth, killer_is_admin,
        killer_character, killer_role, killer_location,
        damage_type, credited, counts_death, kill_distance, time_of_day,
+       killer_rating_before, killer_rating_after,
+       victim_rating_before, victim_rating_after,
        rated, posted
   from kill_events
  where not rated
@@ -243,34 +359,37 @@ select id, received_at, server_guid,
 `
 
 type NextUnratedEventsRow struct {
-	ID              int64
-	ReceivedAt      time.Time
-	ServerGuid      string
-	VictimAgid      string
-	VictimName      string
-	VictimDino      *string
-	VictimGrowth    *float64
-	VictimPoi       *string
-	VictimCharacter *string
-	VictimRole      *string
-	VictimLocation  *string
-	VictimIsAdmin   bool
-	VictimIsAdmin_2 bool
-	KillerAgid      *string
-	KillerName      *string
-	KillerDino      *string
-	KillerGrowth    *float64
-	KillerIsAdmin   bool
-	KillerCharacter *string
-	KillerRole      *string
-	KillerLocation  *string
-	DamageType      string
-	Credited        bool
-	CountsDeath     bool
-	KillDistance    *float64
-	TimeOfDay       *int32
-	Rated           bool
-	Posted          bool
+	ID                 int64
+	ReceivedAt         time.Time
+	ServerGuid         string
+	VictimAgid         string
+	VictimName         string
+	VictimDino         *string
+	VictimGrowth       *float64
+	VictimPoi          *string
+	VictimCharacter    *string
+	VictimRole         *string
+	VictimLocation     *string
+	VictimIsAdmin      bool
+	KillerAgid         *string
+	KillerName         *string
+	KillerDino         *string
+	KillerGrowth       *float64
+	KillerIsAdmin      bool
+	KillerCharacter    *string
+	KillerRole         *string
+	KillerLocation     *string
+	DamageType         string
+	Credited           bool
+	CountsDeath        bool
+	KillDistance       *float64
+	TimeOfDay          *int32
+	KillerRatingBefore *float64
+	KillerRatingAfter  *float64
+	VictimRatingBefore *float64
+	VictimRatingAfter  *float64
+	Rated              bool
+	Posted             bool
 }
 
 // NextUnratedEvents walks the queue in id order, which IS the rating order.
@@ -300,7 +419,6 @@ func (q *Queries) NextUnratedEvents(ctx context.Context, limit int32) ([]NextUnr
 			&i.VictimRole,
 			&i.VictimLocation,
 			&i.VictimIsAdmin,
-			&i.VictimIsAdmin_2,
 			&i.KillerAgid,
 			&i.KillerName,
 			&i.KillerDino,
@@ -314,6 +432,10 @@ func (q *Queries) NextUnratedEvents(ctx context.Context, limit int32) ([]NextUnr
 			&i.CountsDeath,
 			&i.KillDistance,
 			&i.TimeOfDay,
+			&i.KillerRatingBefore,
+			&i.KillerRatingAfter,
+			&i.VictimRatingBefore,
+			&i.VictimRatingAfter,
 			&i.Rated,
 			&i.Posted,
 		); err != nil {
@@ -327,17 +449,139 @@ func (q *Queries) NextUnratedEvents(ctx context.Context, limit int32) ([]NextUnr
 	return items, nil
 }
 
+const playerHistory = `-- name: PlayerHistory :many
+select id, received_at, damage_type,
+       victim_agid, victim_name, victim_dino,
+       killer_agid, killer_name, killer_dino,
+       killer_rating_before, killer_rating_after,
+       victim_rating_before, victim_rating_after
+  from (
+    select k.id, k.received_at, k.dedupe_key, k.server_guid, k.payload, k.victim_agid, k.victim_name, k.victim_dino, k.victim_growth, k.victim_poi, k.killer_agid, k.killer_name, k.killer_dino, k.killer_growth, k.killer_is_admin, k.damage_type, k.credited, k.counts_death, k.rated, k.posted, k.victim_character, k.killer_character, k.victim_role, k.killer_role, k.kill_distance, k.time_of_day, k.victim_is_admin, k.victim_location, k.killer_location, k.killer_rating_before, k.killer_rating_after, k.victim_rating_before, k.victim_rating_after from kill_events k
+     where k.killer_agid = $1 and k.id <= $2
+    union all
+    select k.id, k.received_at, k.dedupe_key, k.server_guid, k.payload, k.victim_agid, k.victim_name, k.victim_dino, k.victim_growth, k.victim_poi, k.killer_agid, k.killer_name, k.killer_dino, k.killer_growth, k.killer_is_admin, k.damage_type, k.credited, k.counts_death, k.rated, k.posted, k.victim_character, k.killer_character, k.victim_role, k.killer_role, k.kill_distance, k.time_of_day, k.victim_is_admin, k.victim_location, k.killer_location, k.killer_rating_before, k.killer_rating_after, k.victim_rating_before, k.victim_rating_after from kill_events k
+     where k.victim_agid = $1 and k.id <= $2
+       and k.killer_agid is distinct from $1
+  ) timeline
+ order by id desc
+ limit $4 offset $3
+`
+
+type PlayerHistoryParams struct {
+	Agid       *string
+	MaxID      int64
+	PageOffset int32
+	PageSize   int32
+}
+
+type PlayerHistoryRow struct {
+	ID                 int64
+	ReceivedAt         time.Time
+	DamageType         string
+	VictimAgid         string
+	VictimName         string
+	VictimDino         *string
+	KillerAgid         *string
+	KillerName         *string
+	KillerDino         *string
+	KillerRatingBefore *float64
+	KillerRatingAfter  *float64
+	VictimRatingBefore *float64
+	VictimRatingAfter  *float64
+}
+
+// PlayerHistory is one page of a player's timeline, newest first.
+//
+// Written as a union of two indexed halves rather than `killer_agid = $1 or
+// victim_agid = $1`, so each half uses its own index. The second half excludes
+// rows where the player is BOTH sides: an environmental death names the victim
+// as their own killer, and it would otherwise appear twice on the page.
+//
+// max_id anchors the whole pagination to the moment the first page was drawn.
+// Without it a kill landing mid-browse shifts every row down and the reader
+// sees the same event on two pages -- which looks exactly like the bug a
+// player checking up on their rating is hoping to find.
+func (q *Queries) PlayerHistory(ctx context.Context, arg PlayerHistoryParams) ([]PlayerHistoryRow, error) {
+	rows, err := q.db.Query(ctx, playerHistory,
+		arg.Agid,
+		arg.MaxID,
+		arg.PageOffset,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PlayerHistoryRow
+	for rows.Next() {
+		var i PlayerHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReceivedAt,
+			&i.DamageType,
+			&i.VictimAgid,
+			&i.VictimName,
+			&i.VictimDino,
+			&i.KillerAgid,
+			&i.KillerName,
+			&i.KillerDino,
+			&i.KillerRatingBefore,
+			&i.KillerRatingAfter,
+			&i.VictimRatingBefore,
+			&i.VictimRatingAfter,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const pruneProcessedEvents = `-- name: PruneProcessedEvents :execrows
-delete from kill_events
- where rated and posted
+update kill_events
+   set payload = null
+ where payload is not null
+   and rated and posted
    and received_at < now() - make_interval(days => $1::int)
 `
 
-// PruneProcessedEvents drops history that both workers are finished with. The
-// aggregates live on the player row, so this loses no stats -- only the
-// ability to replay a rule change against events older than the window.
+// PruneProcessedEvents ages out the RAW PAYLOAD of events both workers have
+// finished with, and keeps the row.
+//
+// It used to delete the row, which quietly made two things impossible: showing
+// a player their whole history in /stats, and replaying a rule change against
+// anything older than the window. Both matter -- the rules have now been wrong
+// twice -- and a slim row is a few hundred bytes, so keeping every event
+// costs a megabyte or two a year while deleting it costs the ability to
+// explain a rating.
+//
+// Nothing replays from the payload: the credit rule is derived from columns
+// (internal/kills/rules.go). What is lost here is forensic detail -- the exact
+// bytes the game sent -- which is worth having for a month and not worth
+// storing forever.
 func (q *Queries) PruneProcessedEvents(ctx context.Context, retentionDays int32) (int64, error) {
 	result, err := q.db.Exec(ctx, pruneProcessedEvents, retentionDays)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const requeueRatedEvents = `-- name: RequeueRatedEvents :execrows
+update kill_events set rated = false where rated
+`
+
+// RequeueRatedEvents hands every event back to the rating applier.
+//
+// The `where rated` is not decoration: without it this rewrites every row on
+// every replay, holding row locks against the feed for the duration. It must
+// NEVER touch `posted` -- clearing that would re-post the server's entire kill
+// history to Discord.
+func (q *Queries) RequeueRatedEvents(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, requeueRatedEvents)
 	if err != nil {
 		return 0, err
 	}

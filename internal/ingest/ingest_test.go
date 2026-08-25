@@ -186,8 +186,9 @@ func TestCreditRules(t *testing.T) {
 				DamageType: "DT_ATTACK", KillerAlderonID: "111-111-111",
 				VictimAlderonID: "222-222-222", KillerIsAdmin: true,
 			},
-			want: false,
-			why:  "admins moderate and test; neither should move the board",
+			want: true,
+			why: "the game's admin kill function names NO killer, so an event that " +
+				"names one is an admin playing the game like anybody else",
 		},
 		{
 			name: "an admin being killed by a player",
@@ -220,6 +221,23 @@ func TestCreditRules(t *testing.T) {
 			},
 			want: false,
 			why:  "whitespace must not be a way around the self-kill rule",
+		},
+		{
+			name: "died of thirst, as the live server actually reports it",
+			event: ingest.PlayerKilled{
+				DamageType: "DT_THIRST", KillerAlderonID: "111-111-111", VictimAlderonID: "111-111-111",
+				KillerIsAdmin: true,
+			},
+			want: false,
+			why: "the game names the VICTIM as their own killer for an environmental " +
+				"death, which is the shape this rule has to recognise",
+		},
+		{
+			name: "fell to their death, as the live server actually reports it",
+			event: ingest.PlayerKilled{
+				DamageType: "DT_IMPACT", KillerAlderonID: "111-111-111", VictimAlderonID: "111-111-111",
+			},
+			want: false,
 		},
 	}
 
@@ -260,35 +278,35 @@ func TestDedupeKeyIsStableAndSpecific(t *testing.T) {
 // (this). They do not coincide -- an environmental death counts but is not
 // credited, and an admin's kill is neither.
 func TestCountsDeathRules(t *testing.T) {
+	// Every shape the live server has actually produced, plus the two the old
+	// rules wrongly excluded. All of them are a player dying, which is the
+	// whole of the rule -- but they are listed rather than collapsed into one
+	// assertion so that a future exclusion has to be argued shape by shape.
 	tests := []struct {
 		name  string
 		event ingest.PlayerKilled
-		want  bool
 		why   string
 	}{
 		{
 			name:  "a normal PvP kill",
 			event: ingest.PlayerKilled{DamageType: "DT_ATTACK", KillerAlderonID: "111-111-111", VictimAlderonID: "222-222-222"},
-			want:  true,
 		},
 		{
 			name:  "starved to death",
 			event: ingest.PlayerKilled{DamageType: "DT_HUNGER", VictimAlderonID: "222-222-222"},
-			want:  true,
 			why:   "surviving is part of playing, even though no rating moves",
 		},
 		{
-			name:  "drowned",
-			event: ingest.PlayerKilled{DamageType: "DT_OXYGEN", VictimAlderonID: "222-222-222"},
-			want:  true,
+			name:  "no killer at all, which is how DT_GENERIC arrives",
+			event: ingest.PlayerKilled{DamageType: "DT_GENERIC", VictimAlderonID: "222-222-222"},
 		},
 		{
-			name: "a self kill",
+			name: "died of thirst, named as their own killer",
 			event: ingest.PlayerKilled{
-				DamageType: "DT_ATTACK", KillerAlderonID: "111-111-111", VictimAlderonID: "111-111-111",
+				DamageType: "DT_THIRST", KillerAlderonID: "111-111-111", VictimAlderonID: "111-111-111",
 			},
-			want: false,
-			why:  "it says nothing about how they play, and it is shown in the feed anyway",
+			why: "the live server reports environmental deaths this way, and the old " +
+				"self-kill exclusion silently discarded every one of them",
 		},
 		{
 			name: "killed by an admin",
@@ -296,23 +314,21 @@ func TestCountsDeathRules(t *testing.T) {
 				DamageType: "DT_ATTACK", KillerAlderonID: "111-111-111",
 				VictimAlderonID: "222-222-222", KillerIsAdmin: true,
 			},
-			want: false,
-			why:  "an admin moderating a fight should not dent the record of whoever they stop",
+			why: "the admin kill function names no killer, so this is an ordinary death",
 		},
 		{
 			name: "killed by a player with non-attack damage",
 			event: ingest.PlayerKilled{
 				DamageType: "DT_TRAMPLE", KillerAlderonID: "111-111-111", VictimAlderonID: "222-222-222",
 			},
-			want: true,
-			why:  "a player did it, in play; it just does not move Elo",
+			why: "a player did it, in play; it just does not move Elo",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.event.CountsDeath(); got != tc.want {
-				t.Errorf("CountsDeath() = %v, want %v (%s)", got, tc.want, tc.why)
+			if !tc.event.CountsDeath() {
+				t.Errorf("CountsDeath() = false, want true (%s)", tc.why)
 			}
 		})
 	}
@@ -321,16 +337,20 @@ func TestCountsDeathRules(t *testing.T) {
 // TestCreditedAndCountsDeathAreIndependent guards against the two rules being
 // quietly collapsed back into one.
 func TestCreditedAndCountsDeathAreIndependent(t *testing.T) {
-	environmental := ingest.PlayerKilled{DamageType: "DT_THIRST", VictimAlderonID: "222-222-222"}
-	if environmental.Credited() || !environmental.CountsDeath() {
-		t.Error("an environmental death should count a death without being credited")
+	// The two questions are still genuinely separate, and this is the shape
+	// that proves it: the world killed them, so it is a death against their
+	// record with no counterparty to take the rating points. Inventing one
+	// would drain a zero-sum system and deflate every rating over time.
+	//
+	// It used to be demonstrated with an admin's kill, which is no longer a
+	// divergence at all -- both answers are now true there.
+	thirst := ingest.PlayerKilled{
+		DamageType: "DT_THIRST", KillerAlderonID: "111-111-111", VictimAlderonID: "111-111-111",
 	}
-
-	adminKill := ingest.PlayerKilled{
-		DamageType: "DT_ATTACK", KillerAlderonID: "111-111-111",
-		VictimAlderonID: "222-222-222", KillerIsAdmin: true,
+	if thirst.Credited() {
+		t.Error("an environmental death credited a kill; the world has no rating to take points from")
 	}
-	if adminKill.Credited() || adminKill.CountsDeath() {
-		t.Error("an admin's kill should be neither credited nor counted")
+	if !thirst.CountsDeath() {
+		t.Error("an environmental death did not count as a death; surviving is part of playing")
 	}
 }

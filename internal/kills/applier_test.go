@@ -11,6 +11,7 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/db"
 	"github.com/USA-RedDragon/obsidibot/internal/db/gen"
 	"github.com/USA-RedDragon/obsidibot/internal/dbtest"
+	"github.com/USA-RedDragon/obsidibot/internal/ingest"
 	"github.com/USA-RedDragon/obsidibot/internal/kills"
 	"github.com/USA-RedDragon/obsidibot/internal/metrics"
 	"github.com/USA-RedDragon/obsidibot/internal/rating"
@@ -55,8 +56,14 @@ func newHarness(t *testing.T) *harness {
 func (h *harness) enqueue(t *testing.T, killer, victim, damageType string, killerIsAdmin bool) {
 	t.Helper()
 	h.seq++
-	credited := damageType == "DT_ATTACK" && killer != "" && killer != victim && !killerIsAdmin
-	countsDeath := killer == "" || (killer != victim && !killerIsAdmin)
+	// Asked of the real rule rather than restated here: a fixture carrying
+	// flags no live row could carry is a test that proves nothing.
+	rules := ingest.PlayerKilled{
+		DamageType: damageType, KillerAlderonID: killer, VictimAlderonID: victim,
+		KillerIsAdmin: killerIsAdmin,
+	}
+	credited := rules.Credited()
+	countsDeath := rules.CountsDeath()
 
 	params := gen.InsertKillEventParams{
 		DedupeKey:     fmt.Appendf(nil, "event-%03d-padding-to-32-bytes!!", h.seq),
@@ -89,14 +96,24 @@ func (h *harness) runApplier(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- applier.Run(ctx) }()
 
-	// Wait for the queue to empty, then stop it.
+	// Wait until the applier has nothing left to do, then stop it.
+	//
+	// A pending replay counts as work even though the queue is EMPTY while it
+	// waits: the replay requeues the events itself, inside one transaction, so
+	// looking only at the queue would cancel the applier mid-replay and roll
+	// the whole thing back.
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		n, err := h.store.Queries().CountUnratedEvents(ctx)
 		if err != nil {
 			t.Fatalf("count: %v", err)
 		}
-		if n == 0 {
+		var pending int
+		if err := h.pool.QueryRow(ctx,
+			"select count(*) from rating_replays where completed_at is null").Scan(&pending); err != nil {
+			t.Fatalf("count pending replays: %v", err)
+		}
+		if n == 0 && pending == 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -171,26 +188,40 @@ func TestEnvironmentalDeathCountsButDoesNotRate(t *testing.T) {
 // -- they happened, and people want to see them -- but they move neither Elo
 // NOR K/D: an admin moderating a fight should not dent the record of whoever
 // they stop, and a self-kill says nothing about how someone plays.
-func TestSelfKillsAndAdminKillsTouchNothing(t *testing.T) {
+func TestAdminKillsCountAndTheWorldDoesNot(t *testing.T) {
 	h := newHarness(t)
-	h.enqueue(t, bob, bob, "DT_ATTACK", false)  // self kill
-	h.enqueue(t, alice, bob, "DT_ATTACK", true) // admin kill
+	// The two shapes the live server sends that the original rules got wrong:
+	// an environmental death names the VICTIM as their own killer, and an
+	// admin's kill names the admin.
+	h.enqueue(t, bob, bob, "DT_THIRST", false)
+	h.enqueue(t, alice, bob, "DT_ATTACK", true)
 	h.runApplier(t)
 
 	victim := h.player(t, bob)
-	if victim.Deaths != 0 {
-		t.Errorf("%d deaths recorded from a self-kill and an admin kill, want 0", victim.Deaths)
+	// Both events killed bob, and both count: the thirst because surviving is
+	// part of playing, the admin's because it was an ordinary kill.
+	if victim.Deaths != 2 {
+		t.Errorf("%d deaths recorded, want 2 -- a thirst death and an admin's kill", victim.Deaths)
 	}
-	if victim.Rating != 1200 {
-		t.Errorf("victim rating moved to %v on uncredited kills", victim.Rating)
-	}
-	// The admin must not appear as having a kill either.
-	if killer, err := h.store.Queries().GetPlayer(context.Background(), alice); err == nil && killer.Kills != 0 {
-		t.Errorf("the admin was credited with %d kills", killer.Kills)
+	if victim.Rating >= 1200 {
+		t.Errorf("victim rating %v did not fall; the admin's kill should have taken points", victim.Rating)
 	}
 
-	// But both events are still queued for the feed: the applier marks them
-	// rated, never posted.
+	killer := h.player(t, alice)
+	if killer.Kills != 1 {
+		t.Errorf("the admin was credited with %d kills, want 1", killer.Kills)
+	}
+	if killer.Rating <= 1200 {
+		t.Errorf("the admin's rating %v did not rise", killer.Rating)
+	}
+
+	// The world took nothing: only the admin's kill is a rated game for bob.
+	if victim.RatedGames != 1 {
+		t.Errorf("%d rated games for the victim, want 1 -- thirst has no counterparty", victim.RatedGames)
+	}
+
+	// Both events are still queued for the feed: the applier marks them rated,
+	// never posted.
 	unposted, err := h.store.Queries().CountUnpostedEvents(context.Background())
 	if err != nil {
 		t.Fatalf("count: %v", err)

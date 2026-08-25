@@ -148,35 +148,39 @@ type GuildConfig struct {
 }
 
 type KillEvent struct {
-	ID              int64
-	ReceivedAt      time.Time
-	DedupeKey       []byte
-	ServerGuid      string
-	Payload         []byte
-	VictimAgid      string
-	VictimName      string
-	VictimDino      *string
-	VictimGrowth    *float64
-	VictimPoi       *string
-	KillerAgid      *string
-	KillerName      *string
-	KillerDino      *string
-	KillerGrowth    *float64
-	KillerIsAdmin   bool
-	DamageType      string
-	Credited        bool
-	CountsDeath     bool
-	Rated           bool
-	Posted          bool
-	VictimCharacter *string
-	KillerCharacter *string
-	VictimRole      *string
-	KillerRole      *string
-	KillDistance    *float64
-	TimeOfDay       *int32
-	VictimIsAdmin   bool
-	VictimLocation  *string
-	KillerLocation  *string
+	ID                 int64
+	ReceivedAt         time.Time
+	DedupeKey          []byte
+	ServerGuid         string
+	Payload            []byte
+	VictimAgid         string
+	VictimName         string
+	VictimDino         *string
+	VictimGrowth       *float64
+	VictimPoi          *string
+	KillerAgid         *string
+	KillerName         *string
+	KillerDino         *string
+	KillerGrowth       *float64
+	KillerIsAdmin      bool
+	DamageType         string
+	Credited           bool
+	CountsDeath        bool
+	Rated              bool
+	Posted             bool
+	VictimCharacter    *string
+	KillerCharacter    *string
+	VictimRole         *string
+	KillerRole         *string
+	KillDistance       *float64
+	TimeOfDay          *int32
+	VictimIsAdmin      bool
+	VictimLocation     *string
+	KillerLocation     *string
+	KillerRatingBefore *float64
+	KillerRatingAfter  *float64
+	VictimRatingBefore *float64
+	VictimRatingAfter  *float64
 }
 
 type LinkChallenge struct {
@@ -205,6 +209,14 @@ type PlayerLink struct {
 	DiscordUserID string
 	AlderonID     string
 	LinkedAt      time.Time
+}
+
+type RatingReplay struct {
+	ID          int64
+	Reason      string
+	RequestedAt time.Time
+	CompletedAt *time.Time
+	MinEventID  *int64
 }
 
 type Warn struct {

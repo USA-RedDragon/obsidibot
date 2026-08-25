@@ -403,16 +403,19 @@ func buildRouter(store *db.Store, game *pot.Client, vault *bank.Bank,
 ) (*interactions.Router, error) {
 	banking := commands.NewBanker(store, vault, cfg).Commands()
 	moderating := commands.NewModeration(store, game, session, m).Commands()
+	stats := commands.NewStats(store)
 	commandSet := make([]interactions.Command, 0, 3+len(banking)+len(moderating))
 	commandSet = append(commandSet,
 		commands.NewLinker(store, game, cfg).Command(),
-		commands.NewStats(store).Command(),
+		stats.Command(),
 		commands.NewConfig(store).Command(),
 	)
 	commandSet = append(commandSet, banking...)
 	commandSet = append(commandSet, moderating...)
 
-	return interactions.NewRouter(cfg.Discord.PublicKey, session, m, commandSet)
+	// The history buttons under /stats. Registered by prefix, so one entry
+	// covers every page of every player.
+	return interactions.NewRouter(cfg.Discord.PublicKey, session, m, commandSet, stats.Component())
 }
 
 // registerCommands makes this binary's commands the guild's complete set, then

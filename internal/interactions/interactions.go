@@ -103,6 +103,9 @@ type Reply struct {
 	// metric label so "you are not linked" does not read as a system fault on
 	// a dashboard.
 	UserError bool
+	// Components are the buttons and selects attached to the reply. Their
+	// custom IDs are routed back here by prefix -- see Component.
+	Components []discordgo.MessageComponent
 }
 
 // Handler runs one command.
@@ -136,12 +139,30 @@ type Command struct {
 	RequiresManageGuild bool
 }
 
+// Component handles a press on a button or a select.
+//
+// # Why the state lives in the custom ID
+//
+// Every replica is identical and shares nothing, so the press may well arrive
+// at a different one than drew the message. Anything the handler needs -- which
+// player, which page -- therefore has to travel in the custom ID, which Discord
+// hands back verbatim. Holding it in memory would work in testing and fail in
+// production the moment a load balancer did its job.
+//
+// Prefix is matched against the custom ID up to its first colon, so one handler
+// owns a family of IDs like "stats:555-000-101:48:10".
+type Component struct {
+	Prefix  string
+	Handler Handler
+}
+
 // Router verifies, routes and answers interactions.
 type Router struct {
-	publicKey ed25519.PublicKey
-	editor    Editor
-	metrics   *metrics.Metrics
-	commands  map[string]Command
+	publicKey  ed25519.PublicKey
+	editor     Editor
+	metrics    *metrics.Metrics
+	commands   map[string]Command
+	components map[string]Component
 	// deferred counts the background goroutines started by deferAndRun. They
 	// outlive the request that started them -- that is the whole point of a
 	// deferred reply -- so something has to know they exist, or shutdown will
@@ -151,7 +172,11 @@ type Router struct {
 
 // NewRouter builds a Router. publicKeyHex is the application's Ed25519 public
 // key; an invalid one is a startup failure rather than a per-request one.
-func NewRouter(publicKeyHex string, editor Editor, m *metrics.Metrics, commands []Command) (*Router, error) {
+// components are variadic so the many callers that register none -- every test
+// of command routing, for one -- are untouched by their existence.
+func NewRouter(publicKeyHex string, editor Editor, m *metrics.Metrics,
+	commands []Command, components ...Component,
+) (*Router, error) {
 	key, err := hex.DecodeString(publicKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("decode discord.publicKey: %w", err)
@@ -169,7 +194,23 @@ func NewRouter(publicKeyHex string, editor Editor, m *metrics.Metrics, commands 
 		byName[cmd.Definition.Name] = cmd
 	}
 
-	return &Router{publicKey: key, editor: editor, metrics: m, commands: byName}, nil
+	byPrefix := make(map[string]Component, len(components))
+	for _, component := range components {
+		if component.Prefix == "" || strings.Contains(component.Prefix, ":") {
+			// The colon is the delimiter, so a prefix containing one could
+			// never be matched and would fail as a silently dead button.
+			return nil, fmt.Errorf("component prefix %q must be non-empty and contain no colon", component.Prefix)
+		}
+		if _, dup := byPrefix[component.Prefix]; dup {
+			return nil, fmt.Errorf("duplicate component prefix %q", component.Prefix)
+		}
+		byPrefix[component.Prefix] = component
+	}
+
+	return &Router{
+		publicKey: key, editor: editor, metrics: m,
+		commands: byName, components: byPrefix,
+	}, nil
 }
 
 // Commands returns the definitions to register, sorted by name.
@@ -322,16 +363,51 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.writeJSON(req.Context(), w, &discordgo.InteractionResponse{Type: discordgo.InteractionResponsePong})
 	case discordgo.InteractionApplicationCommand:
 		r.handleCommand(w, req, &interaction)
-	case discordgo.InteractionMessageComponent,
-		discordgo.InteractionApplicationCommandAutocomplete,
+	case discordgo.InteractionMessageComponent:
+		r.handleComponent(w, req, &interaction)
+	case discordgo.InteractionApplicationCommandAutocomplete,
 		discordgo.InteractionModalSubmit:
-		// None of these are used: every command answers in one shot. Replying
-		// with a PONG would tell Discord we handled something we did not, so
-		// this is a 400 -- honest, and not retried.
+		// Neither is used. Replying with a PONG would tell Discord we handled
+		// something we did not, so this is a 400 -- honest, and not retried.
 		http.Error(w, "unsupported interaction type", http.StatusBadRequest)
 	default:
 		http.Error(w, "unsupported interaction type", http.StatusBadRequest)
 	}
+}
+
+// handleComponent answers a button press.
+//
+// It never defers. A component press carries the same three-second budget as a
+// command, and the only thing behind these is a single indexed query -- so
+// deferring would add a round trip and a visible flicker to buy nothing.
+//
+// The reply REPLACES the message the button is on, which is what makes paging
+// feel like paging rather than like a thread of near-identical messages.
+func (r *Router) handleComponent(w http.ResponseWriter, req *http.Request, ic *discordgo.InteractionCreate) {
+	customID := ic.MessageComponentData().CustomID
+	prefix, _, _ := strings.Cut(customID, ":")
+
+	component, known := r.components[prefix]
+	if !known {
+		// Usually a button from a previous version of the bot, still sitting in
+		// somebody's scrollback. Saying so beats letting their click hang.
+		slog.WarnContext(req.Context(), "press on an unrouted component", "prefix", prefix)
+		r.writeJSON(req.Context(), w, immediate(Reply{
+			Content:   "That button is no longer available. Run the command again.",
+			Ephemeral: true,
+		}))
+		return
+	}
+
+	ictx := Context{Interaction: ic, UserID: userID(ic), GuildID: ic.GuildID}
+	start := time.Now()
+	reply, err := component.Handler(req.Context(), ictx)
+	if err != nil {
+		slog.ErrorContext(req.Context(), "component failed", "prefix", prefix, "error", err)
+		reply = Reply{Content: genericFailure, Ephemeral: true}
+	}
+	r.observe(prefix, err == nil && !reply.UserError, time.Since(start))
+	r.writeJSON(req.Context(), w, update(reply))
 }
 
 func (r *Router) handleCommand(w http.ResponseWriter, req *http.Request, ic *discordgo.InteractionCreate) {
@@ -462,6 +538,11 @@ func (r *Router) edit(ctx context.Context, interaction *discordgo.Interaction, r
 	if len(reply.Embeds) > 0 {
 		edit.Embeds = &reply.Embeds
 	}
+	if len(reply.Components) > 0 {
+		// Carried here as well as on the immediate path, so a command that
+		// grows a Defer later does not silently lose its buttons.
+		edit.Components = &reply.Components
+	}
 	if edit.Content == nil && edit.Embeds == nil {
 		// An empty edit leaves the user staring at "thinking" forever.
 		content := "Done."
@@ -500,20 +581,35 @@ func (r *Router) writeJSON(ctx context.Context, w http.ResponseWriter, resp *dis
 }
 
 func immediate(reply Reply) *discordgo.InteractionResponse {
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: responseData(reply),
+	}
+}
+
+// update replaces the message a component is attached to, rather than posting
+// a new one.
+func update(reply Reply) *discordgo.InteractionResponse {
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: responseData(reply),
+	}
+}
+
+func responseData(reply Reply) *discordgo.InteractionResponseData {
 	data := &discordgo.InteractionResponseData{
-		Content: reply.Content,
-		Embeds:  reply.Embeds,
+		Content:    reply.Content,
+		Embeds:     reply.Embeds,
+		Components: reply.Components,
 		// Mentions are rendered but never ping. The leaderboard names up to
-		// twenty people every minute; pinging them would be unusable.
+		// twenty people every minute; pinging them would be unusable -- and
+		// /stats names whoever killed you, which must not buzz their phone.
 		AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 	}
 	if reply.Ephemeral {
 		data.Flags = discordgo.MessageFlagsEphemeral
 	}
-	return &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: data,
-	}
+	return data
 }
 
 // userID resolves the caller from whichever field Discord populated: Member in

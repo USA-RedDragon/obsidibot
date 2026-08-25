@@ -203,36 +203,47 @@ func (f *Feed) embed(event gen.NextUnpostedEventsRow) *discordgo.MessageEmbed {
 		killerName = discordfmt.EscapeMarkdown(derefOr(event.KillerName, *event.KillerAgid))
 	}
 
+	// The world killed them if nobody did, or if the game named them as their
+	// own killer -- which is how thirst, falls and impacts actually arrive.
+	// Reading only the nil case rendered those as "X killed X".
+	byTheWorld := event.KillerAgid == nil || *event.KillerAgid == event.VictimAgid
+
 	switch {
-	case event.KillerAgid == nil:
+	case byTheWorld:
 		embed.Title = victimName + " " + environmentPhrase(event.DamageType)
-	case event.Credited:
+	case creditsAKill(event.DamageType, event.KillerAgid, event.VictimAgid):
 		embed.Color = colourKill
 		embed.Title = killerName + " killed " + victimName
 	default:
-		// A kill the rules did not credit -- an admin's, or a self-kill. It
-		// still happened, so the feed still shows it; it moved no rating.
+		// Killed by somebody, but not in a way the rules rate -- a trample,
+		// say. It still happened and it still counts as a death, so the footer
+		// may only disclaim the RATING.
 		embed.Color = colourUnranked
 		embed.Title = killerName + " killed " + victimName
-		embed.Footer = &discordgo.MessageEmbedFooter{Text: "unranked - does not affect rating or K/D"}
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: "unranked - does not affect rating"}
 	}
 
-	if event.KillerAgid != nil {
+	// Suppressed when the world did it: the game names the victim as their own
+	// killer for an environmental death, so this column would otherwise read
+	// "Killer: Wrathbelly" directly under "Wrathbelly died of thirst".
+	if !byTheWorld {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 			Name: "Killer", Inline: true,
 			Value: combatant(derefOr(event.KillerName, *event.KillerAgid), *event.KillerAgid,
 				event.KillerCharacter, event.KillerDino, event.KillerGrowth,
-				event.KillerRole, event.KillerIsAdmin),
+				event.KillerRole, event.KillerIsAdmin,
+				event.KillerRatingBefore, event.KillerRatingAfter),
 		})
 	}
 	embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 		Name: "Victim", Inline: true,
 		Value: combatant(event.VictimName, event.VictimAgid,
 			event.VictimCharacter, event.VictimDino, event.VictimGrowth,
-			event.VictimRole, event.VictimIsAdmin),
+			event.VictimRole, event.VictimIsAdmin,
+			event.VictimRatingBefore, event.VictimRatingAfter),
 	})
 
-	if details := circumstances(event); details != "" {
+	if details := circumstances(event, byTheWorld); details != "" {
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
 			Name: "Where & how", Inline: true, Value: details,
 		})
@@ -243,7 +254,7 @@ func (f *Feed) embed(event gen.NextUnpostedEventsRow) *discordgo.MessageEmbed {
 // combatant renders one party: who they are, which character, what they were
 // playing, how grown, what role, and their Alderon ID.
 func combatant(name, agid string, character, species *string, growth *float64,
-	role *string, isAdmin bool,
+	role *string, isAdmin bool, ratingBefore, ratingAfter *float64,
 ) string {
 	var b strings.Builder
 	b.WriteString("**" + discordfmt.EscapeMarkdown(name) + "**")
@@ -272,19 +283,25 @@ func combatant(name, agid string, character, species *string, growth *float64,
 	if role != nil && *role != "" {
 		b.WriteString("\n" + discordfmt.EscapeMarkdown(*role))
 	}
+	if figures := ratingMove(ratingBefore, ratingAfter); figures != "" {
+		b.WriteString("\n" + figures)
+	}
 	return b.String()
 }
 
 // circumstances renders where and how: the point of interest, the damage type,
 // how far apart the two were, the in-world clock, and both coordinates.
-func circumstances(event gen.NextUnpostedEventsRow) string {
+func circumstances(event gen.NextUnpostedEventsRow, byTheWorld bool) string {
 	var lines []string
 	if event.VictimPoi != nil && *event.VictimPoi != "" {
 		lines = append(lines, discordfmt.EscapeMarkdown(*event.VictimPoi))
 	}
 
 	how := damageLabel(event.DamageType)
-	if event.KillDistance != nil {
+	// An environmental death carries a distance of 0 rather than the -1 the
+	// ingest endpoint drops, so without this a thirst death reports "0.0 m"
+	// as though somebody had been standing on top of them.
+	if event.KillDistance != nil && !byTheWorld {
 		// The game reports Unreal units, i.e. centimetres. Verified against a
 		// real event by recomputing the distance from the two coordinates.
 		how += fmt.Sprintf(" / %.1f m", *event.KillDistance/100)
@@ -292,7 +309,7 @@ func circumstances(event gen.NextUnpostedEventsRow) string {
 	lines = append(lines, how)
 
 	if event.TimeOfDay != nil {
-		lines = append(lines, fmt.Sprintf("%02d:%02d in-world", *event.TimeOfDay/100, *event.TimeOfDay%100))
+		lines = append(lines, inWorldClock(*event.TimeOfDay)+" in-world")
 	}
 	if coords := formatLocation(event.KillerLocation); coords != "" {
 		lines = append(lines, "K `"+coords+"`")
@@ -301,6 +318,18 @@ func circumstances(event gen.NextUnpostedEventsRow) string {
 		lines = append(lines, "V `"+coords+"`")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// inWorldClock renders the game's day clock.
+//
+// TimeOfDay is HUNDREDTHS OF AN HOUR, not HHMM: 1489 means 14.89 hours, which
+// is 14:53. Printing the low two digits as minutes produced impossible times --
+// 14 of the first 46 live events had a minutes field of 60 or more, and 1779
+// rendered as "17:79".
+func inWorldClock(timeOfDay int32) string {
+	hours := timeOfDay / 100
+	minutes := (timeOfDay % 100) * 60 / 100
+	return fmt.Sprintf("%02d:%02d", hours, minutes)
 }
 
 //nolint:gochecknoglobals // compiled once and never reassigned
@@ -341,6 +370,9 @@ func damageLabel(damageType string) string {
 var damageLabels = map[string]string{
 	"DT_ATTACK": "Attack", "DT_THIRST": "Thirst", "DT_HUNGER": "Hunger",
 	"DT_OXYGEN": "Drowning", "DT_BLEED": "Bleeding", "DT_BREAKLEGS": "Fall",
+	// DT_IMPACT is the other half of falling and arrives from the live server;
+	// it was absent here, so it rendered as the raw "DT\_IMPACT".
+	"DT_IMPACT":  "Fall",
 	"DT_TRAMPLE": "Trampled", "DT_SPIKES": "Spikes", "DT_GENERIC": "Unknown causes",
 	"DT_ARMORPIERCING": "Armour piercing",
 }
@@ -358,7 +390,7 @@ func environmentPhrase(damageType string) string {
 		return "drowned"
 	case "DT_BLEED":
 		return "bled out"
-	case "DT_BREAKLEGS":
+	case "DT_BREAKLEGS", "DT_IMPACT":
 		return "died from a fall"
 	case "DT_TRAMPLE":
 		return "was trampled"
@@ -369,6 +401,27 @@ func environmentPhrase(damageType string) string {
 	default:
 		return "died (" + discordfmt.EscapeMarkdown(damageType) + ")"
 	}
+}
+
+// ratingMove renders what a kill did to one player's rating.
+//
+// Both figures are stored on the event when it is rated, because this is the
+// only moment anything knows them -- recomputing later would mean replaying the
+// whole order-dependent chain. Nothing is rendered when nothing moved: a "+0.0"
+// reads as a result of zero rather than as "this kill was not rated".
+func ratingMove(before, after *float64) string {
+	if before == nil || after == nil {
+		return ""
+	}
+	delta := *after - *before
+	sign := "+"
+	if delta < 0 {
+		// A minus sign rather than a hyphen: the feed is read at a glance and
+		// the two are hard to tell apart in Discord's font.
+		sign = "\u2212"
+		delta = -delta
+	}
+	return fmt.Sprintf("%.1f \u2192 %.1f (%s%.1f)", *before, *after, sign, delta)
 }
 
 func derefOr(v *string, fallback string) string {

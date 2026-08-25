@@ -388,7 +388,11 @@ type KillFeed struct {
 	// question and is still never published; see internal/pot's package doc.
 	// Kill events are kept only until they have been rated and posted; the
 	// aggregates live on the player row and are unaffected by pruning.
-	RetentionDays int `name:"retentionDays" default:"30" description:"days to keep processed kill events before pruning"`
+	// RetentionDays ages out the raw webhook payload, NOT the event. Kill
+	// events are kept for the life of the server: /stats shows a player their
+	// whole history, and a rule change can only be replayed against events
+	// that still exist -- which has now been needed twice.
+	RetentionDays int `name:"retentionDays" default:"30" description:"days to keep the raw webhook payload of a processed kill event; the event itself is kept forever"`
 }
 
 func (k KillFeed) validate() []error {

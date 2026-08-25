@@ -118,6 +118,7 @@ func TestFeedPostsInOrder(t *testing.T) {
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
 	h.enqueue(t, bob, carol, "DT_ATTACK", false)
 	h.enqueue(t, "", alice, "DT_THIRST", false)
+	h.runApplier(t)
 
 	poster := &fakePoster{}
 	h.runFeed(t, poster)
@@ -141,6 +142,7 @@ func TestFeedIsLossless(t *testing.T) {
 	h.setKillChannel(t)
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
 	h.enqueue(t, bob, carol, "DT_ATTACK", false)
+	h.runApplier(t)
 
 	// Every send fails for a while, then recovers.
 	poster := &fakePoster{failUntil: 3}
@@ -164,6 +166,7 @@ func TestFeedNeverPings(t *testing.T) {
 	h := newHarness(t)
 	h.setKillChannel(t)
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.runApplier(t)
 
 	poster := &fakePoster{}
 	h.runFeed(t, poster)
@@ -183,6 +186,7 @@ func TestFeedNeverPings(t *testing.T) {
 func TestFeedSkipsWhenNoChannelIsSet(t *testing.T) {
 	h := newHarness(t)
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.runApplier(t)
 
 	poster := &fakePoster{}
 	h.runFeed(t, poster)
@@ -218,6 +222,7 @@ func TestFeedEscapesHostileNames(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
+	h.runApplier(t)
 
 	poster := &fakePoster{}
 	h.runFeed(t, poster)
@@ -244,6 +249,7 @@ func TestPermissionFailureIsNotHammered(t *testing.T) {
 	h := newHarness(t)
 	h.setKillChannel(t)
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.runApplier(t)
 
 	poster := &fakePoster{err: &discordgo.RESTError{
 		Message: &discordgo.APIErrorMessage{
@@ -288,6 +294,7 @@ func TestTransientFailureIsRetriedPromptly(t *testing.T) {
 	h := newHarness(t)
 	h.setKillChannel(t)
 	h.enqueue(t, alice, bob, "DT_ATTACK", false)
+	h.runApplier(t)
 
 	poster := &fakePoster{err: errors.New("HTTP 502 Bad Gateway")}
 

@@ -32,18 +32,24 @@ update players
    set kills        = kills + 1,
        rated_games  = rated_games + 1,
        rating       = $2,
-       last_seen_at = now()
+       last_seen_at = greatest(players.last_seen_at, $3)
  where alderon_id = $1
 `
 
 type CreditKillParams struct {
 	AlderonID string
 	Rating    float64
+	SeenAt    time.Time
 }
 
 // CreditKill is the killer's half of a rated kill.
+//
+// greatest() rather than assignment: a replay walks events oldest-first, and a
+// player's true last activity may be a bank operation or a link that happened
+// after their last kill. Monotonic means a replay can never drag that
+// backwards.
 func (q *Queries) CreditKill(ctx context.Context, arg CreditKillParams) error {
-	_, err := q.db.Exec(ctx, creditKill, arg.AlderonID, arg.Rating)
+	_, err := q.db.Exec(ctx, creditKill, arg.AlderonID, arg.Rating, arg.SeenAt)
 	return err
 }
 
@@ -144,34 +150,61 @@ update players
    set deaths       = deaths + 1,
        rated_games  = rated_games + 1,
        rating       = $2,
-       last_seen_at = now()
+       last_seen_at = greatest(players.last_seen_at, $3)
  where alderon_id = $1
 `
 
 type RecordRatedLossParams struct {
 	AlderonID string
 	Rating    float64
+	SeenAt    time.Time
 }
 
 // RecordRatedLoss is the victim's half of a rated kill: a death that also
 // moved their rating.
 func (q *Queries) RecordRatedLoss(ctx context.Context, arg RecordRatedLossParams) error {
-	_, err := q.db.Exec(ctx, recordRatedLoss, arg.AlderonID, arg.Rating)
+	_, err := q.db.Exec(ctx, recordRatedLoss, arg.AlderonID, arg.Rating, arg.SeenAt)
 	return err
 }
 
 const recordUnratedDeath = `-- name: RecordUnratedDeath :exec
 update players
    set deaths       = deaths + 1,
-       last_seen_at = now()
+       last_seen_at = greatest(players.last_seen_at, $2)
  where alderon_id = $1
 `
 
-// RecordUnratedDeath is an environmental death. It counts against K/D and
-// leaves the rating alone: there is no opponent to take the points, and
-// inventing one would drain the pool and deflate every rating over time.
-func (q *Queries) RecordUnratedDeath(ctx context.Context, alderonID string) error {
-	_, err := q.db.Exec(ctx, recordUnratedDeath, alderonID)
+type RecordUnratedDeathParams struct {
+	AlderonID string
+	SeenAt    time.Time
+}
+
+// RecordUnratedDeath is a death nothing can be rated against -- the world, or
+// a kill the rules do not credit. It counts against K/D and leaves the rating
+// alone: there is no opponent to take the points, and inventing one would
+// drain the pool and deflate every rating over time.
+func (q *Queries) RecordUnratedDeath(ctx context.Context, arg RecordUnratedDeathParams) error {
+	_, err := q.db.Exec(ctx, recordUnratedDeath, arg.AlderonID, arg.SeenAt)
+	return err
+}
+
+const resetPlayerAggregates = `-- name: ResetPlayerAggregates :exec
+update players
+   set rating      = $1::double precision,
+       kills       = 0,
+       deaths      = 0,
+       rated_games = 0
+`
+
+// ResetPlayerAggregates rewinds every player to the starting state so the
+// rating applier can rebuild them from the events.
+//
+// decayed_at and last_seen_at are deliberately UNTOUCHED: neither is derivable
+// from the event stream, and clearing them would either re-run decay from
+// scratch or mark the whole server active. The initial rating is a parameter
+// because rating.initial lives in configuration.
+func (q *Queries) ResetPlayerAggregates(ctx context.Context, initial float64) error {
+	_, err := q.db.Exec(ctx, resetPlayerAggregates, initial)
 	return err
 }
 
@@ -249,5 +282,44 @@ type UpsertPlayerSeenParams struct {
 // configuration stays the single source of that number.
 func (q *Queries) UpsertPlayerSeen(ctx context.Context, arg UpsertPlayerSeenParams) error {
 	_, err := q.db.Exec(ctx, upsertPlayerSeen, arg.AlderonID, arg.LastKnownName, arg.Rating)
+	return err
+}
+
+const upsertPlayerSeenAt = `-- name: UpsertPlayerSeenAt :exec
+insert into players (alderon_id, last_known_name, rating, first_seen_at, last_seen_at)
+values ($1, $2, $3, $4, $4)
+on conflict (alderon_id) do update
+    set last_known_name = excluded.last_known_name,
+        last_seen_at    = greatest(players.last_seen_at, $4)
+`
+
+type UpsertPlayerSeenAtParams struct {
+	AlderonID     string
+	LastKnownName string
+	Rating        float64
+	SeenAt        time.Time
+}
+
+// UpsertPlayerSeenAt is UpsertPlayerSeen for the rating applier, which is
+// processing an event that happened at a KNOWN time rather than reacting to
+// something happening now.
+//
+// The distinction only shows itself during a replay: with now(), rebuilding
+// history stamps every player as active this instant, which lies in /stats and
+// silently resets their decay clock for another grace period. In live
+// ingestion seen_at is the event's received_at, milliseconds from now(), so
+// nothing changes.
+//
+// last_seen_at and first_seen_at are named EXPLICITLY on the insert path. Both
+// columns default to now(), so relying on the default would stamp a player
+// first created during a replay with the replay's own clock -- the exact bug
+// the conflict clause below avoids.
+func (q *Queries) UpsertPlayerSeenAt(ctx context.Context, arg UpsertPlayerSeenAtParams) error {
+	_, err := q.db.Exec(ctx, upsertPlayerSeenAt,
+		arg.AlderonID,
+		arg.LastKnownName,
+		arg.Rating,
+		arg.SeenAt,
+	)
 	return err
 }

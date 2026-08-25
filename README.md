@@ -360,7 +360,7 @@ trading kills net out near zero.
 | `/link confirm code:<code>` | anyone | Completes the link |
 | `/link status` | anyone | Shows your current link |
 | `/link remove` | anyone | Unlinks. Stats and banked marks are kept and reattach if you link again |
-| `/stats [user]` | anyone | Rating, kills, deaths, K/D and last seen. Public |
+| `/stats [user]` | anyone | Rating, kills, deaths, K/D, last seen, and the last five events that moved the rating. Private to you, with a button for the full history |
 | `/deposit [amount]` | linked | Marks from your dinosaur into the bank. Omit the amount for all of it |
 | `/withdraw [amount]` | linked | Marks from the bank onto your dinosaur |
 | `/balance` | linked | What you have banked |
@@ -409,14 +409,28 @@ One kill event answers three separate questions:
 | | shown in the feed | moves Elo | counts toward K/D |
 | --- | --- | --- | --- |
 | Player kill (`DT_ATTACK`) | yes | yes | yes |
+| Killed by an admin | yes | **yes** | **yes** |
 | Environmental death (thirst, hunger, drowning, falls) | yes | no | yes |
-| Self-kill | yes | no | no |
-| Killed by an admin | yes | no | no |
+| Killed by a player, non-attack damage (a trample, say) | yes | no | yes |
 
-Dying of thirst counts against you because surviving is part of playing, but it
-moves no rating: there is no counterparty to take the points, and inventing one
-would drain the pool and deflate every rating over time. An admin moderating a
-fight should not dent the record of whoever they stop.
+**Every event is a death**, because the webhook fires when a player dies. Dying
+of thirst counts against you because surviving is part of playing, but it moves
+no rating: there is no counterparty to take the points, and inventing one would
+drain the pool and deflate every rating over time.
+
+**An admin's kill counts like anybody else's.** The game has a *separate* admin
+kill function that names no killer at all, so an event that does name an admin
+is an admin playing the game — not moderating it. Discarding those was
+discarding half the recorded history.
+
+Two things the game does that are worth knowing, because they are not what the
+names suggest:
+
+- **An environmental death names the victim as their own killer**, with a kill
+  distance of zero. It is not a suicide, and the feed reads it as "died of
+  thirst" rather than "X killed X".
+- **Fall damage arrives as `DT_IMPACT` or `DT_BREAKLEGS`**; `DT_GENERIC` with
+  no killer at all is something else again and is still being identified.
 
 The leaderboard lists **everyone**, linked or not — unlinked players appear under
 their in-game name — so the board ranks the server rather than the subset of it
@@ -432,7 +446,17 @@ stacked lines the game's own Discord webhook posts. That includes both parties'
 coordinates and the point of interest — there is no flag, because the feed
 describes a fight that has already happened.
 
-`KillDistance` arrives in Unreal units and is rendered in metres.
+`KillDistance` arrives in Unreal units and is rendered in metres. `TimeOfDay` is
+hundredths of an hour rather than HHMM, so 1489 is 14:53 — read the other way it
+produces times like "17:79".
+
+Each side of a rated kill shows **what it did to their rating** — `1200.0 →
+1212.4 (+12.4)` — so the number on the leaderboard can be taken apart by anyone
+who wants to. An event that moved nothing shows nothing rather than "+0.0".
+
+The feed **waits for the rating to be computed** before posting, since it
+reports that rating. A stalled rating applier therefore also stalls the feed;
+nothing is dropped, because the queue is durable.
 
 **The bot needs View Channel, Send Messages and Embed Links in the feed
 channel.** Channel permission overrides beat server-wide grants, so a read-only
@@ -441,6 +465,27 @@ leaving `@everyone` denied, which keeps the channel read-only for members. If it
 cannot post, it says so once every five minutes and keeps the backlog rather
 than retrying every second; kills are never dropped and appear as soon as the
 permission is granted.
+
+### Kill history and retention
+
+Kill events are kept **for the life of the server**. Only the raw webhook
+payload ages out, after `killfeed.retentionDays` (30 by default) — a slim row is
+a few hundred bytes, so a busy server costs a megabyte or two a year.
+
+That is deliberate, and it buys two things:
+
+- **`/stats` can show a player their whole history**, which is what makes a
+  rating arguable rather than merely asserted.
+- **A rule change can be replayed against all of it.** The rules have been wrong
+  twice now; both times the fix was to recompute every rating from the events in
+  order, which is only possible while the events exist.
+
+A replay is requested by a migration and performed by the rating applier, in one
+transaction: every aggregate is reset, every event re-rated in id order, and the
+whole thing commits at once — so nobody ever sees a half-rebuilt leaderboard.
+It **refuses to run** if any event it needs has been deleted, because a replay
+over a partial history produces a wrong leaderboard that looks completely
+ordinary.
 
 ### Moderation and bans
 
