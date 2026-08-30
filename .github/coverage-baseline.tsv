@@ -1,7 +1,7 @@
 embedded.go	5	0
 internal/bank/bank.go	143	114
 internal/bank/reconciler.go	101	74
-internal/board/board.go	52	42
+internal/board/board.go	59	49
 internal/cmd/root.go	120	88
 internal/commands/bank.go	72	62
 internal/commands/config.go	52	3
@@ -19,7 +19,7 @@ internal/db/gen/models.go	26	6
 internal/db/gen/moderation.sql.go	129	104
 internal/db/gen/players.sql.go	48	42
 internal/db/migrate.go	198	144
-internal/db/store.go	32	24
+internal/db/store.go	32	25
 internal/dbtest/dbtest.go	40	29
 internal/discordfmt/discordfmt.go	14	14
 internal/gamecmd/gamecmd.go	59	48
@@ -32,7 +32,7 @@ internal/interactions/register.go	22	19
 internal/kills/applier.go	120	85
 internal/kills/feed.go	152	118
 internal/kills/rules.go	4	4
-internal/leader/leader.go	46	42
+internal/leader/leader.go	46	43
 internal/linkcode/linkcode.go	14	13
 internal/metrics/collector.go	97	88
 internal/metrics/expose.go	129	129
@@ -40,7 +40,7 @@ internal/metrics/goruntime.go	27	22
 internal/metrics/metrics.go	9	9
 internal/metrics/process.go	49	42
 internal/moderation/duration.go	29	29
-internal/moderation/embeds.go	70	50
+internal/moderation/embeds.go	70	51
 internal/moderation/scheduler.go	127	85
 internal/numfmt/numfmt.go	12	12
 internal/pot/client.go	122	109
