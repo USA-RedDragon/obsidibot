@@ -120,10 +120,21 @@ func (b *Board) refresh(ctx context.Context) error {
 			b.markSuccess()
 			return nil
 		}
-		// Somebody deleted the message, or it moved. Falling through to post a
-		// fresh one is the whole recovery path; without it the board silently
-		// stops updating forever.
-		slog.InfoContext(ctx, "leaderboard message could not be edited, posting a new one", "error", err)
+		// ONLY a message Discord says is gone justifies posting another one.
+		//
+		// Anything else -- a rate limit, a 5xx, a dropped connection -- means
+		// the edit did not happen, not that the message stopped existing. This
+		// used to fall through on ANY error, and a "connection reset by peer"
+		// duly left a second leaderboard in the channel; twice in two days,
+		// which is exactly as often as the internet drops a TCP connection.
+		// The board is a single message by design, so the cost of a wrong
+		// guess here is permanent clutter that nothing cleans up.
+		if !messageIsGone(err) {
+			slog.WarnContext(ctx, "could not edit the leaderboard, leaving it for the next tick",
+				"error", err)
+			return nil
+		}
+		slog.InfoContext(ctx, "the leaderboard message is gone, posting a new one", "error", err)
 	}
 
 	message, err := b.messenger.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
@@ -140,6 +151,22 @@ func (b *Board) refresh(ctx context.Context) error {
 	}
 	b.markSuccess()
 	return nil
+}
+
+// messageIsGone reports whether Discord says the message no longer exists.
+//
+// This is the one recovery path the board needs -- somebody deletes the
+// message, or a moderator clears the channel -- and it must be recognised
+// precisely, because the alternative failure mode is posting duplicates
+// forever on a flaky network.
+func messageIsGone(err error) bool {
+	var rest *discordgo.RESTError
+	if !errors.As(err, &rest) || rest.Message == nil {
+		// Not even a reply from Discord: a transport error, which says nothing
+		// about whether the message exists.
+		return false
+	}
+	return rest.Message.Code == discordgo.ErrCodeUnknownMessage
 }
 
 func (b *Board) markSuccess() {

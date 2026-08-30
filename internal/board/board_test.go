@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -22,11 +23,15 @@ import (
 // fakeMessenger records posts and edits, and can be told to fail an edit the
 // way Discord does when the message has been deleted.
 type fakeMessenger struct {
-	mu        sync.Mutex
-	posts     []*discordgo.MessageSend
-	edits     []*discordgo.MessageEdit
-	editFails bool
-	nextID    int
+	mu     sync.Mutex
+	posts  []*discordgo.MessageSend
+	edits  []*discordgo.MessageEdit
+	nextID int
+	// editErr is returned by the next and every subsequent edit. It is an
+	// error rather than a bool because the board has to tell "Discord says the
+	// message is gone" from "the network dropped", and getting that wrong
+	// leaves duplicate leaderboards in the channel.
+	editErr error
 }
 
 func (f *fakeMessenger) ChannelMessageSendComplex(_ string, data *discordgo.MessageSend,
@@ -44,8 +49,8 @@ func (f *fakeMessenger) ChannelMessageEditComplex(edit *discordgo.MessageEdit,
 ) (*discordgo.Message, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.editFails {
-		return nil, errors.New("404: Unknown Message")
+	if f.editErr != nil {
+		return nil, f.editErr
 	}
 	f.edits = append(f.edits, edit)
 	return &discordgo.Message{ID: edit.ID}, nil
@@ -175,7 +180,7 @@ func TestBoardRecoversFromADeletedMessage(t *testing.T) {
 	h.seed(t, "111-111-111", "alice", 1400, 10, 2, nil)
 
 	h.tick(t)
-	h.msg.editFails = true
+	h.msg.editErr = unknownMessageError()
 	h.tick(t)
 
 	posts, _ := h.msg.counts()
@@ -185,7 +190,7 @@ func TestBoardRecoversFromADeletedMessage(t *testing.T) {
 
 	// And the new id was remembered, so the next tick edits rather than
 	// posting a third.
-	h.msg.editFails = false
+	h.msg.editErr = nil
 	h.tick(t)
 	posts, edits := h.msg.counts()
 	if posts != 2 || edits != 1 {
@@ -325,5 +330,74 @@ func TestBoardRespectsSize(t *testing.T) {
 	rendered := h.msg.lastRendered()
 	if strings.Count(rendered, "`#") != 3 {
 		t.Fatalf("board rendered %d rows, want 3:\n%s", strings.Count(rendered, "`#"), rendered)
+	}
+}
+
+// unknownMessageError is what Discord returns once the message really is gone.
+func unknownMessageError() error {
+	return &discordgo.RESTError{
+		Response: &http.Response{StatusCode: http.StatusNotFound},
+		Message: &discordgo.APIErrorMessage{
+			Code: discordgo.ErrCodeUnknownMessage, Message: "Unknown Message",
+		},
+	}
+}
+
+// TestATransientEditFailureDoesNotPostASecondBoard is a regression test for a
+// fault that reached production twice in two days.
+//
+// The board treated ANY edit failure as "the message must have been deleted"
+// and posted a replacement. A dropped TCP connection -- "read: connection
+// reset by peer", which is simply what the internet does occasionally -- was
+// therefore enough to leave a second leaderboard sitting in the channel
+// forever, because nothing ever cleans one up.
+//
+// The edit not happening says nothing about whether the message exists. The
+// board is one message by design, so it waits for the next tick instead.
+func TestATransientEditFailureDoesNotPostASecondBoard(t *testing.T) {
+	for name, editErr := range map[string]error{
+		"connection reset": errors.New(
+			`Patch "https://discord.com/api/v9/channels/1/messages/2": read tcp: connection reset by peer`),
+		"rate limited": &discordgo.RESTError{
+			Response: &http.Response{StatusCode: http.StatusTooManyRequests},
+		},
+		"server error": &discordgo.RESTError{
+			Response: &http.Response{StatusCode: http.StatusBadGateway},
+		},
+		"missing permissions": &discordgo.RESTError{
+			Response: &http.Response{StatusCode: http.StatusForbidden},
+			Message: &discordgo.APIErrorMessage{
+				Code: discordgo.ErrCodeMissingPermissions, Message: "Missing Permissions",
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.setChannel(t, "channel-1")
+			h.seed(t, "111-111-111", "alice", 1400, 10, 2, nil)
+
+			h.tick(t)
+			h.msg.editErr = editErr
+			h.tick(t)
+			h.tick(t)
+
+			posts, _ := h.msg.counts()
+			if posts != 1 {
+				t.Fatalf("%d leaderboards in the channel after a transient failure, want 1", posts)
+			}
+
+			// And once the blip passes it goes straight back to editing the
+			// message it already had.
+			h.msg.editErr = nil
+			h.tick(t)
+			posts, edits := h.msg.counts()
+			if posts != 1 {
+				t.Errorf("%d posts after recovery, want 1", posts)
+			}
+			if edits != 1 {
+				t.Errorf("%d edits, want exactly 1: the board should resume editing the message "+
+					"it already had, having made no successful edit while the blip lasted", edits)
+			}
+		})
 	}
 }
