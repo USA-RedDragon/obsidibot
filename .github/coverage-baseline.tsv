@@ -13,7 +13,7 @@ internal/config/config.go	130	127
 internal/db/gen/bank.sql.go	65	56
 internal/db/gen/db.go	2	2
 internal/db/gen/guild.sql.go	16	16
-internal/db/gen/kills.sql.go	79	69
+internal/db/gen/kills.sql.go	79	70
 internal/db/gen/links.sql.go	55	49
 internal/db/gen/models.go	26	6
 internal/db/gen/moderation.sql.go	129	104
@@ -29,10 +29,10 @@ internal/ingest/payload.go	12	12
 internal/ingest/server.go	106	92
 internal/interactions/interactions.go	172	152
 internal/interactions/register.go	22	19
-internal/kills/applier.go	120	92
+internal/kills/applier.go	120	95
 internal/kills/feed.go	152	118
 internal/kills/rules.go	4	4
-internal/leader/leader.go	46	43
+internal/leader/leader.go	46	42
 internal/linkcode/linkcode.go	14	13
 internal/metrics/collector.go	97	88
 internal/metrics/expose.go	129	129
