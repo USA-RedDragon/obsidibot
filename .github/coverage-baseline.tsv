@@ -19,7 +19,7 @@ internal/db/gen/models.go	26	6
 internal/db/gen/moderation.sql.go	129	104
 internal/db/gen/players.sql.go	48	42
 internal/db/migrate.go	198	144
-internal/db/store.go	32	25
+internal/db/store.go	32	24
 internal/dbtest/dbtest.go	40	29
 internal/discordfmt/discordfmt.go	14	14
 internal/gamecmd/gamecmd.go	59	48
@@ -29,7 +29,7 @@ internal/ingest/payload.go	12	12
 internal/ingest/server.go	106	92
 internal/interactions/interactions.go	172	152
 internal/interactions/register.go	22	19
-internal/kills/applier.go	120	91
+internal/kills/applier.go	120	92
 internal/kills/feed.go	152	118
 internal/kills/rules.go	4	4
 internal/leader/leader.go	46	43
@@ -40,7 +40,7 @@ internal/metrics/goruntime.go	27	22
 internal/metrics/metrics.go	9	9
 internal/metrics/process.go	49	42
 internal/moderation/duration.go	29	29
-internal/moderation/embeds.go	70	51
+internal/moderation/embeds.go	70	50
 internal/moderation/scheduler.go	127	85
 internal/numfmt/numfmt.go	12	12
 internal/pot/client.go	122	109
