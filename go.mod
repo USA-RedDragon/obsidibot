@@ -3,7 +3,7 @@ module github.com/USA-RedDragon/obsidibot
 go 1.26.5
 
 require (
-	github.com/SRS-Hosting/rcon v0.0.4
+	github.com/SRS-Hosting/rcon v0.0.5
 	github.com/USA-RedDragon/configulator v0.0.5
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/jackc/pgx/v5 v5.11.0
