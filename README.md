@@ -1,6 +1,6 @@
 # obsidibot
 
-[![Release](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml) [![License](https://badgen.net/github/license/USA-RedDragon/obsidibot)](https://github.com/USA-RedDragon/obsidibot/blob/main/LICENSE) [![Version](https://img.shields.io/github/release/USA-RedDragon/obsidibot.svg)](https://github.com/USA-RedDragon/obsidibot/releases/) [![Coverage](.github/badges/coverage.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/test.yaml)
+[![Release](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml/badge.svg)](https://github.com/USA-RedDragon/obsidibot/actions/workflows/release.yaml) [![License](https://badgen.net/github/license/USA-RedDragon/obsidibot)](https://github.com/USA-RedDragon/obsidibot/blob/main/LICENSE) [![Version](https://img.shields.io/github/release/USA-RedDragon/obsidibot.svg)](https://github.com/USA-RedDragon/obsidibot/releases/) [![coverage](https://raw.githubusercontent.com/USA-RedDragon/obsidibot/main/.github/badges/coverage.svg)](https://github.com/USA-RedDragon/obsidibot/actions)
 
 Discord bot for the **Obsidian Wilds** Path of Titans server.
 
@@ -262,16 +262,57 @@ Secret, not in the file.
 
 ### Reference
 
-**Required** — the bot refuses to start without these:
+**Required**: the bot refuses to start without `ingest.secret`, `database.url`,
+`discord.token`, `discord.applicationId`, `discord.publicKey` and
+`rcon.password`.
 
-| Key | Env | Description |
-| --- | --- | --- |
-| `ingest.secret` | `INGEST_SECRET` | Shared secret in the webhook path; ≥32 chars, no `/?#%` |
-| `database.url` | `DATABASE_URL` | PostgreSQL URL; `psql://` and `postgresql://` are accepted too |
-| `discord.token` | `DISCORD_TOKEN` | Bot token |
-| `discord.applicationId` | `DISCORD_APPLICATIONID` | Application ID |
-| `discord.publicKey` | `DISCORD_PUBLICKEY` | Ed25519 public key, 64 hex characters |
-| `rcon.password` | `RCON_PASSWORD` | RCON password |
+The leaderboard is ordered by Elo. Beating a stronger player is worth more;
+farming a weaker one is worth almost nothing, and two players trading kills net
+out near zero.
+
+<!-- configulator:begin -->
+
+| Key                           | Type    | Default     | Environment                   | Flag                            | Description                                                                                                                              |
+|-------------------------------|---------|-------------|-------------------------------|---------------------------------|------------------------------------------------------------------------------------------------------------------------------------------|
+| `logLevel`                    | string  | `info`      | `LOGLEVEL`                    | `--logLevel`                    | log verbosity: debug, info, warn, or error                                                                                               |
+| `interactions.bind`           | string  |             | `INTERACTIONS_BIND`           | `--interactions.bind`           | address to listen on; empty listens on all interfaces over both IPv4 and IPv6                                                            |
+| `interactions.port`           | integer | `8080`      | `INTERACTIONS_PORT`           | `--interactions.port`           | port the Discord interactions endpoint listens on                                                                                        |
+| `ingest.bind`                 | string  |             | `INGEST_BIND`                 | `--ingest.bind`                 | address to listen on; empty listens on all interfaces over both IPv4 and IPv6                                                            |
+| `ingest.port`                 | integer | `8081`      | `INGEST_PORT`                 | `--ingest.port`                 | port the game webhook endpoint listens on; must NOT be published to the internet                                                         |
+| `ingest.secret`               | string  |             | `INGEST_SECRET`               | `--ingest.secret`               | shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32         |
+| `metrics.enabled`             | boolean | `true`      | `METRICS_ENABLED`             | `--metrics.enabled`             | serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this                                      |
+| `metrics.port`                | integer | `9090`      | `METRICS_PORT`                | `--metrics.port`                | TCP port for the metrics listener                                                                                                        |
+| `pprof.enabled`               | boolean | `false`     | `PPROF_ENABLED`               | `--pprof.enabled`               | serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal                                      |
+| `pprof.port`                  | integer | `6060`      | `PPROF_PORT`                  | `--pprof.port`                  | TCP port for the pprof listener                                                                                                          |
+| `database.url`                | string  |             | `DATABASE_URL`                | `--database.url`                | connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too                                |
+| `database.migrateOnStart`     | boolean | `true`      | `DATABASE_MIGRATEONSTART`     | `--database.migrateOnStart`     | apply pending schema migrations on startup                                                                                               |
+| `database.maxConns`           | integer | `16`        | `DATABASE_MAXCONNS`           | `--database.maxConns`           | maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once         |
+| `discord.token`               | string  |             | `DISCORD_TOKEN`               | `--discord.token`               | bot token (required), used for the REST calls that post the feed and the board                                                           |
+| `discord.applicationId`       | string  |             | `DISCORD_APPLICATIONID`       | `--discord.applicationId`       | Discord application ID (required), used to register commands and edit deferred replies                                                   |
+| `discord.publicKey`           | string  |             | `DISCORD_PUBLICKEY`           | `--discord.publicKey`           | Ed25519 public key of the application as hex (required); every interaction is verified against it                                        |
+| `rcon.host`                   | string  | `127.0.0.1` | `RCON_HOST`                   | `--rcon.host`                   | hostname or IP of the Source RCON server                                                                                                 |
+| `rcon.port`                   | integer | `7779`      | `RCON_PORT`                   | `--rcon.port`                   | TCP port of the Source RCON server                                                                                                       |
+| `rcon.password`               | string  |             | `RCON_PASSWORD`               | `--rcon.password`               | RCON password (required)                                                                                                                 |
+| `rcon.timeoutSeconds`         | integer | `10`        | `RCON_TIMEOUTSECONDS`         | `--rcon.timeoutSeconds`         | deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response                                             |
+| `rcon.maxConcurrent`          | integer | `4`         | `RCON_MAXCONCURRENT`          | `--rcon.maxConcurrent`          | maximum RCON commands in flight at once; further callers fail fast rather than queue                                                     |
+| `rating.initial`              | integer | `1200`      | `RATING_INITIAL`              | `--rating.initial`              | rating every player starts at                                                                                                            |
+| `rating.provisionalK`         | integer | `40`        | `RATING_PROVISIONALK`         | `--rating.provisionalK`         | K factor while a player has fewer than provisionalGames rated kills                                                                      |
+| `rating.settlingK`            | integer | `20`        | `RATING_SETTLINGK`            | `--rating.settlingK`            | K factor between provisionalGames and settlingGames                                                                                      |
+| `rating.stableK`              | integer | `16`        | `RATING_STABLEK`              | `--rating.stableK`              | K factor once a player passes settlingGames                                                                                              |
+| `rating.provisionalGames`     | integer | `20`        | `RATING_PROVISIONALGAMES`     | `--rating.provisionalGames`     | rated games before K drops from provisionalK to settlingK                                                                                |
+| `rating.settlingGames`        | integer | `50`        | `RATING_SETTLINGGAMES`        | `--rating.settlingGames`        | rated games before K drops from settlingK to stableK                                                                                     |
+| `rating.decayGraceDays`       | integer | `30`        | `RATING_DECAYGRACEDAYS`       | `--rating.decayGraceDays`       | days a player may be idle before decay begins                                                                                            |
+| `rating.decayPermillePerDay`  | integer | `5`         | `RATING_DECAYPERMILLEPERDAY`  | `--rating.decayPermillePerDay`  | thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial |
+| `bank.cooldownSeconds`        | integer | `10`        | `BANK_COOLDOWNSECONDS`        | `--bank.cooldownSeconds`        | seconds a player must wait between banking operations                                                                                    |
+| `bank.verifyAttempts`         | integer | `5`         | `BANK_VERIFYATTEMPTS`         | `--bank.verifyAttempts`         | times to re-read a player's marks trying to confirm an unverified transfer before parking it for review                                  |
+| `leaderboard.intervalSeconds` | integer | `60`        | `LEADERBOARD_INTERVALSECONDS` | `--leaderboard.intervalSeconds` | seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed     |
+| `leaderboard.size`            | integer | `20`        | `LEADERBOARD_SIZE`            | `--leaderboard.size`            | players listed on the leaderboard                                                                                                        |
+| `killfeed.retentionDays`      | integer | `30`        | `KILLFEED_RETENTIONDAYS`      | `--killfeed.retentionDays`      | days to keep the raw webhook payload of a processed kill event; the event itself is kept forever                                         |
+| `link.codeTTLSeconds`         | integer | `300`       | `LINK_CODETTLSECONDS`         | `--link.codeTTLSeconds`         | seconds a link code stays valid                                                                                                          |
+| `link.maxAttempts`            | integer | `5`         | `LINK_MAXATTEMPTS`            | `--link.maxAttempts`            | wrong codes accepted before a challenge is burned                                                                                        |
+| `link.reissueCooldownSeconds` | integer | `30`        | `LINK_REISSUECOOLDOWNSECONDS` | `--link.reissueCooldownSeconds` | seconds before a user may request another link code                                                                                      |
+
+<!-- configulator:end -->
 
 ### Two things there is deliberately no setting for
 
@@ -298,59 +339,6 @@ would mean rejecting real kills and losing them.
 **Being in two or more guilds is a startup error**, naming them, rather than a
 guess — picking one arbitrarily would register commands into a server at random.
 Keep the application non-public and this cannot arise.
-
-**Listeners:**
-
-| Key | Env | Default | Description |
-| --- | --- | --- | --- |
-| `logLevel` | `LOGLEVEL` | `info` | `debug`, `info`, `warn` or `error` |
-| `interactions.bind` | `INTERACTIONS_BIND` | *(all)* | Empty binds every interface, IPv4 and IPv6 |
-| `interactions.port` | `INTERACTIONS_PORT` | `8080` | Public; Discord posts here |
-| `ingest.bind` | `INGEST_BIND` | *(all)* | |
-| `ingest.port` | `INGEST_PORT` | `8081` | **Do not publish this port** |
-| `metrics.enabled` | `METRICS_ENABLED` | `true` | Serves `/metrics`. Health probes are on 8080 and are unaffected by this |
-| `metrics.port` | `METRICS_PORT` | `9090` | |
-| `pprof.enabled` | `PPROF_ENABLED` | `false` | `/debug/pprof/cmdline` prints process arguments — keep it internal |
-| `pprof.port` | `PPROF_PORT` | `6060` | |
-
-**Game connection:**
-
-| Key | Env | Default | Description |
-| --- | --- | --- | --- |
-| `rcon.host` | `RCON_HOST` | `127.0.0.1` | |
-| `rcon.port` | `RCON_PORT` | `7779` | |
-| `rcon.timeoutSeconds` | `RCON_TIMEOUTSECONDS` | `10` | Covers a whole exchange: connect, authenticate, command, response |
-| `rcon.maxConcurrent` | `RCON_MAXCONCURRENT` | `4` | The game handles RCON on its game thread; keep this small |
-| `database.migrateOnStart` | `DATABASE_MIGRATEONSTART` | `true` | Migrations are serialised by an advisory lock, so every replica may run them |
-| `database.maxConns` | `DATABASE_MAXCONNS` | `16` | Pool size per replica. Set explicitly because pgx's own default is `max(4, NumCPU)` — the same image would then run a comfortable pool on a large node and a four-connection pool on a small one. **Startup refuses** if this leaves no room for the background jobs plus request traffic |
-
-**Rating** — the leaderboard is ordered by Elo. Beating a stronger player is
-worth more; farming a weaker one is worth almost nothing, and two players
-trading kills net out near zero.
-
-| Key | Env | Default | Description |
-| --- | --- | --- | --- |
-| `rating.initial` | `RATING_INITIAL` | `1200` | Starting rating |
-| `rating.provisionalK` | `RATING_PROVISIONALK` | `40` | K while under `provisionalGames` |
-| `rating.settlingK` | `RATING_SETTLINGK` | `20` | K between the two thresholds |
-| `rating.stableK` | `RATING_STABLEK` | `16` | K once past `settlingGames` |
-| `rating.provisionalGames` | `RATING_PROVISIONALGAMES` | `20` | |
-| `rating.settlingGames` | `RATING_SETTLINGGAMES` | `50` | |
-| `rating.decayGraceDays` | `RATING_DECAYGRACEDAYS` | `30` | Idle days before decay begins |
-| `rating.decayPermillePerDay` | `RATING_DECAYPERMILLEPERDAY` | `5` | Thousandths of the gap to `initial` per idle day. Only ever pulls a rating *down* toward the baseline |
-
-**Feed, board and banking:**
-
-| Key | Env | Default | Description |
-| --- | --- | --- | --- |
-| `killfeed.retentionDays` | `KILLFEED_RETENTIONDAYS` | `30` | Processed events are pruned after this. Player totals are unaffected |
-| `leaderboard.intervalSeconds` | `LEADERBOARD_INTERVALSECONDS` | `60` | The board and the feed share a channel rate limit; a shorter tick starves the feed |
-| `leaderboard.size` | `LEADERBOARD_SIZE` | `20` | |
-| `bank.cooldownSeconds` | `BANK_COOLDOWNSECONDS` | `10` | Between transfers, per player |
-| `bank.verifyAttempts` | `BANK_VERIFYATTEMPTS` | `5` | Observation attempts before a transfer is parked for review. The wait between them is the reconciler's own tick |
-| `link.codeTTLSeconds` | `LINK_CODETTLSECONDS` | `300` | |
-| `link.maxAttempts` | `LINK_MAXATTEMPTS` | `5` | Wrong codes before a challenge is burned |
-| `link.reissueCooldownSeconds` | `LINK_REISSUECOOLDOWNSECONDS` | `30` | `/link start` whispers somebody in game; this stops it being a spam button |
 
 ## Commands
 
