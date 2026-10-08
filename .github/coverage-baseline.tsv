@@ -32,7 +32,7 @@ internal/interactions/register.go	22	19
 internal/kills/applier.go	120	92
 internal/kills/feed.go	152	118
 internal/kills/rules.go	4	4
-internal/leader/leader.go	46	40
+internal/leader/leader.go	46	43
 internal/linkcode/linkcode.go	14	13
 internal/metrics/collector.go	97	88
 internal/metrics/expose.go	129	129
