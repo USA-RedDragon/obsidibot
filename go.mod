@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/SRS-Hosting/rcon v0.0.5
-	github.com/USA-RedDragon/configulator/v2 v2.1.0
+	github.com/USA-RedDragon/configulator/v2 v2.3.0
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/jackc/pgx/v5 v5.11.0

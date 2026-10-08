@@ -1,0 +1,99 @@
+# Sample configuration for Config.
+# log verbosity: debug, info, warn, or error
+logLevel: "info"
+# public listener Discord posts interactions to
+interactions:
+  # address to listen on; empty listens on all interfaces over both IPv4 and IPv6
+  # bind: ""
+  # port the Discord interactions endpoint listens on
+  port: 8080
+# cluster-internal listener the game server posts webhooks to
+ingest:
+  # address to listen on; empty listens on all interfaces over both IPv4 and IPv6
+  # bind: ""
+  # port the game webhook endpoint listens on; must NOT be published to the internet
+  port: 8081
+  # shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32
+  # secret: ""
+# Prometheus metrics listener
+metrics:
+  # serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this
+  enabled: true
+  # TCP port for the metrics listener
+  port: 9090
+# pprof debug listener
+pprof:
+  # serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal
+  enabled: false
+  # TCP port for the pprof listener
+  port: 6060
+# PostgreSQL connection
+database:
+  # connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too
+  # url: ""
+  # apply pending schema migrations on startup
+  migrateOnStart: true
+  # maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once
+  maxConns: 16
+# Discord application credentials
+discord:
+  # bot token (required), used for the REST calls that post the feed and the board
+  # token: ""
+  # Discord application ID (required), used to register commands and edit deferred replies
+  # applicationId: ""
+  # Ed25519 public key of the application as hex (required); every interaction is verified against it
+  # publicKey: ""
+# Source RCON server settings
+rcon:
+  # hostname or IP of the Source RCON server
+  host: "127.0.0.1"
+  # TCP port of the Source RCON server
+  port: 7779
+  # RCON password (required)
+  # password: ""
+  # deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response
+  timeoutSeconds: 10
+  # maximum RCON commands in flight at once; further callers fail fast rather than queue
+  maxConcurrent: 4
+# Elo rating constants
+rating:
+  # rating every player starts at
+  initial: 1200
+  # K factor while a player has fewer than provisionalGames rated kills
+  provisionalK: 40
+  # K factor between provisionalGames and settlingGames
+  settlingK: 20
+  # K factor once a player passes settlingGames
+  stableK: 16
+  # rated games before K drops from provisionalK to settlingK
+  provisionalGames: 20
+  # rated games before K drops from settlingK to stableK
+  settlingGames: 50
+  # days a player may be idle before decay begins
+  decayGraceDays: 30
+  # thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial
+  decayPermillePerDay: 5
+# marks banking behaviour
+bank:
+  # seconds a player must wait between banking operations
+  cooldownSeconds: 10
+  # times to re-read a player's marks trying to confirm an unverified transfer before parking it for review
+  verifyAttempts: 5
+# persistent leaderboard message
+leaderboard:
+  # seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed
+  intervalSeconds: 60
+  # players listed on the leaderboard
+  size: 20
+# kill feed behaviour
+killfeed:
+  # days to keep the raw webhook payload of a processed kill event; the event itself is kept forever
+  retentionDays: 30
+# /link challenge behaviour
+link:
+  # seconds a link code stays valid
+  codeTTLSeconds: 300
+  # wrong codes accepted before a challenge is burned
+  maxAttempts: 5
+  # seconds before a user may request another link code
+  reissueCooldownSeconds: 30

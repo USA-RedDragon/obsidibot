@@ -210,9 +210,10 @@ Restart the server after editing.
 ## Configuration
 
 Settings come from a **config file**, then **environment variables**, then
-**flags**, each overriding the last. The default file is `config.yaml`; point
-elsewhere with `--config`. A `--config` naming a file that does not exist is a
-startup error rather than a silent fall back to defaults.
+**flags**, each overriding the last. The default file is `config.yaml` (see
+[`config.example.yaml`](config.example.yaml)); point elsewhere with `--config`.
+A `--config` naming a file that does not exist is a startup error rather than a
+silent fall back to defaults.
 
 - Flags are dotted and keep their case: `--discord.token`, `--link.maxAttempts`.
 - Environment variables are the section and field, upper-cased, joined with `_`:

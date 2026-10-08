@@ -11,6 +11,7 @@ import (
 	configulator "github.com/USA-RedDragon/configulator/v2"
 	cpflag "github.com/USA-RedDragon/configulator/v2/flags/pflag"
 	"github.com/spf13/pflag"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -99,7 +100,7 @@ func ConfigSchema() *configulator.Schema[Config] {
 		DecodeFile:    configDecodeFile,
 	}
 }
-func configApplyDefaults(cfg *Config, set configulator.SetOrigin) error {
+func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) error {
 	cfg.LogLevel = LogLevel("info")
 	set("logLevel", configulator.LayerDefault, "default tag")
 	cfg.Interactions.Port = 8080
@@ -160,7 +161,7 @@ func configApplyDefaults(cfg *Config, set configulator.SetOrigin) error {
 	set("link.reissueCooldownSeconds", configulator.LayerDefault, "default tag")
 	return nil
 }
-func configDecodeFile(data []byte, u configulator.Unmarshal, cfg *Config, set configulator.SetOrigin, file string) error {
+func configDecodeFile(data []byte, u configulator.Unmarshal, cfg *Config, sep string, set configulator.SetOrigin, file string) error {
 	var sh configShadow
 	if err := u(data, &sh); err != nil {
 		return &configulator.DecodeError{
@@ -168,9 +169,9 @@ func configDecodeFile(data []byte, u configulator.Unmarshal, cfg *Config, set co
 			Path: file,
 		}
 	}
-	return sh.applyTo(cfg, set, file)
+	return sh.applyTo(cfg, sep, set, file)
 }
-func (s *configShadow) applyTo(cfg *Config, set configulator.SetOrigin, file string) error {
+func (s *configShadow) applyTo(cfg *Config, sep string, set configulator.SetOrigin, file string) error {
 	if s.LogLevel != nil {
 		cfg.LogLevel = LogLevel(*s.LogLevel)
 		set("logLevel", configulator.LayerFile, file)
@@ -822,51 +823,55 @@ func ConfigPFlagHooks() cpflag.Hooks[Config] {
 	}
 }
 func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
-	for _, name := range []string{strings.Join([]string{"logLevel"}, o.Separator), strings.Join([]string{"interactions", "bind"}, o.Separator), strings.Join([]string{"interactions", "port"}, o.Separator), strings.Join([]string{"ingest", "bind"}, o.Separator), strings.Join([]string{"ingest", "port"}, o.Separator), strings.Join([]string{"ingest", "secret"}, o.Separator), strings.Join([]string{"metrics", "enabled"}, o.Separator), strings.Join([]string{"metrics", "port"}, o.Separator), strings.Join([]string{"pprof", "enabled"}, o.Separator), strings.Join([]string{"pprof", "port"}, o.Separator), strings.Join([]string{"database", "url"}, o.Separator), strings.Join([]string{"database", "migrateOnStart"}, o.Separator), strings.Join([]string{"database", "maxConns"}, o.Separator), strings.Join([]string{"discord", "token"}, o.Separator), strings.Join([]string{"discord", "applicationId"}, o.Separator), strings.Join([]string{"discord", "publicKey"}, o.Separator), strings.Join([]string{"rcon", "host"}, o.Separator), strings.Join([]string{"rcon", "port"}, o.Separator), strings.Join([]string{"rcon", "password"}, o.Separator), strings.Join([]string{"rcon", "timeoutSeconds"}, o.Separator), strings.Join([]string{"rcon", "maxConcurrent"}, o.Separator), strings.Join([]string{"rating", "initial"}, o.Separator), strings.Join([]string{"rating", "provisionalK"}, o.Separator), strings.Join([]string{"rating", "settlingK"}, o.Separator), strings.Join([]string{"rating", "stableK"}, o.Separator), strings.Join([]string{"rating", "provisionalGames"}, o.Separator), strings.Join([]string{"rating", "settlingGames"}, o.Separator), strings.Join([]string{"rating", "decayGraceDays"}, o.Separator), strings.Join([]string{"rating", "decayPermillePerDay"}, o.Separator), strings.Join([]string{"bank", "cooldownSeconds"}, o.Separator), strings.Join([]string{"bank", "verifyAttempts"}, o.Separator), strings.Join([]string{"leaderboard", "intervalSeconds"}, o.Separator), strings.Join([]string{"leaderboard", "size"}, o.Separator), strings.Join([]string{"killfeed", "retentionDays"}, o.Separator), strings.Join([]string{"link", "codeTTLSeconds"}, o.Separator), strings.Join([]string{"link", "maxAttempts"}, o.Separator), strings.Join([]string{"link", "reissueCooldownSeconds"}, o.Separator)} {
-		if fs.Lookup(name) != nil {
-			return fmt.Errorf("flag --%s already registered on this FlagSet", name)
+	names := []string{strings.Join([]string{"logLevel"}, o.Separator), strings.Join([]string{"interactions", "bind"}, o.Separator), strings.Join([]string{"interactions", "port"}, o.Separator), strings.Join([]string{"ingest", "bind"}, o.Separator), strings.Join([]string{"ingest", "port"}, o.Separator), strings.Join([]string{"ingest", "secret"}, o.Separator), strings.Join([]string{"metrics", "enabled"}, o.Separator), strings.Join([]string{"metrics", "port"}, o.Separator), strings.Join([]string{"pprof", "enabled"}, o.Separator), strings.Join([]string{"pprof", "port"}, o.Separator), strings.Join([]string{"database", "url"}, o.Separator), strings.Join([]string{"database", "migrateOnStart"}, o.Separator), strings.Join([]string{"database", "maxConns"}, o.Separator), strings.Join([]string{"discord", "token"}, o.Separator), strings.Join([]string{"discord", "applicationId"}, o.Separator), strings.Join([]string{"discord", "publicKey"}, o.Separator), strings.Join([]string{"rcon", "host"}, o.Separator), strings.Join([]string{"rcon", "port"}, o.Separator), strings.Join([]string{"rcon", "password"}, o.Separator), strings.Join([]string{"rcon", "timeoutSeconds"}, o.Separator), strings.Join([]string{"rcon", "maxConcurrent"}, o.Separator), strings.Join([]string{"rating", "initial"}, o.Separator), strings.Join([]string{"rating", "provisionalK"}, o.Separator), strings.Join([]string{"rating", "settlingK"}, o.Separator), strings.Join([]string{"rating", "stableK"}, o.Separator), strings.Join([]string{"rating", "provisionalGames"}, o.Separator), strings.Join([]string{"rating", "settlingGames"}, o.Separator), strings.Join([]string{"rating", "decayGraceDays"}, o.Separator), strings.Join([]string{"rating", "decayPermillePerDay"}, o.Separator), strings.Join([]string{"bank", "cooldownSeconds"}, o.Separator), strings.Join([]string{"bank", "verifyAttempts"}, o.Separator), strings.Join([]string{"leaderboard", "intervalSeconds"}, o.Separator), strings.Join([]string{"leaderboard", "size"}, o.Separator), strings.Join([]string{"killfeed", "retentionDays"}, o.Separator), strings.Join([]string{"link", "codeTTLSeconds"}, o.Separator), strings.Join([]string{"link", "maxAttempts"}, o.Separator), strings.Join([]string{"link", "reissueCooldownSeconds"}, o.Separator)}
+	for i, name := range names {
+		if fs.Lookup(name) != nil || slices.Contains(names[:i], name) {
+			return &configulator.FlagConflictError{
+				Existing: name,
+				Flag:     name,
+			}
 		}
 	}
-	fs.String(strings.Join([]string{"logLevel"}, o.Separator), "info", "log verbosity: debug, info, warn, or error")
-	fs.String(strings.Join([]string{"interactions", "bind"}, o.Separator), "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
-	fs.Int(strings.Join([]string{"interactions", "port"}, o.Separator), 8080, "port the Discord interactions endpoint listens on")
-	fs.String(strings.Join([]string{"ingest", "bind"}, o.Separator), "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
-	fs.Int(strings.Join([]string{"ingest", "port"}, o.Separator), 8081, "port the game webhook endpoint listens on; must NOT be published to the internet")
-	fs.String(strings.Join([]string{"ingest", "secret"}, o.Separator), "", "shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32")
-	fs.Bool(strings.Join([]string{"metrics", "enabled"}, o.Separator), true, "serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this")
-	fs.Int(strings.Join([]string{"metrics", "port"}, o.Separator), 9090, "TCP port for the metrics listener")
-	fs.Bool(strings.Join([]string{"pprof", "enabled"}, o.Separator), false, "serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal")
-	fs.Int(strings.Join([]string{"pprof", "port"}, o.Separator), 6060, "TCP port for the pprof listener")
-	fs.String(strings.Join([]string{"database", "url"}, o.Separator), "", "connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too")
-	fs.Bool(strings.Join([]string{"database", "migrateOnStart"}, o.Separator), true, "apply pending schema migrations on startup")
-	fs.Int(strings.Join([]string{"database", "maxConns"}, o.Separator), 16, "maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once")
-	fs.String(strings.Join([]string{"discord", "token"}, o.Separator), "", "bot token (required), used for the REST calls that post the feed and the board")
-	fs.String(strings.Join([]string{"discord", "applicationId"}, o.Separator), "", "Discord application ID (required), used to register commands and edit deferred replies")
-	fs.String(strings.Join([]string{"discord", "publicKey"}, o.Separator), "", "Ed25519 public key of the application as hex (required); every interaction is verified against it")
-	fs.String(strings.Join([]string{"rcon", "host"}, o.Separator), "127.0.0.1", "hostname or IP of the Source RCON server")
-	fs.Int(strings.Join([]string{"rcon", "port"}, o.Separator), 7779, "TCP port of the Source RCON server")
-	fs.String(strings.Join([]string{"rcon", "password"}, o.Separator), "", "RCON password (required)")
-	fs.Int(strings.Join([]string{"rcon", "timeoutSeconds"}, o.Separator), 10, "deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response")
-	fs.Int(strings.Join([]string{"rcon", "maxConcurrent"}, o.Separator), 4, "maximum RCON commands in flight at once; further callers fail fast rather than queue")
-	fs.Int(strings.Join([]string{"rating", "initial"}, o.Separator), 1200, "rating every player starts at")
-	fs.Int(strings.Join([]string{"rating", "provisionalK"}, o.Separator), 40, "K factor while a player has fewer than provisionalGames rated kills")
-	fs.Int(strings.Join([]string{"rating", "settlingK"}, o.Separator), 20, "K factor between provisionalGames and settlingGames")
-	fs.Int(strings.Join([]string{"rating", "stableK"}, o.Separator), 16, "K factor once a player passes settlingGames")
-	fs.Int(strings.Join([]string{"rating", "provisionalGames"}, o.Separator), 20, "rated games before K drops from provisionalK to settlingK")
-	fs.Int(strings.Join([]string{"rating", "settlingGames"}, o.Separator), 50, "rated games before K drops from settlingK to stableK")
-	fs.Int(strings.Join([]string{"rating", "decayGraceDays"}, o.Separator), 30, "days a player may be idle before decay begins")
-	fs.Int(strings.Join([]string{"rating", "decayPermillePerDay"}, o.Separator), 5, "thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial")
-	fs.Int(strings.Join([]string{"bank", "cooldownSeconds"}, o.Separator), 10, "seconds a player must wait between banking operations")
-	fs.Int(strings.Join([]string{"bank", "verifyAttempts"}, o.Separator), 5, "times to re-read a player's marks trying to confirm an unverified transfer before parking it for review")
-	fs.Int(strings.Join([]string{"leaderboard", "intervalSeconds"}, o.Separator), 60, "seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed")
-	fs.Int(strings.Join([]string{"leaderboard", "size"}, o.Separator), 20, "players listed on the leaderboard")
-	fs.Int(strings.Join([]string{"killfeed", "retentionDays"}, o.Separator), 30, "days to keep the raw webhook payload of a processed kill event; the event itself is kept forever")
-	fs.Int(strings.Join([]string{"link", "codeTTLSeconds"}, o.Separator), 300, "seconds a link code stays valid")
-	fs.Int(strings.Join([]string{"link", "maxAttempts"}, o.Separator), 5, "wrong codes accepted before a challenge is burned")
-	fs.Int(strings.Join([]string{"link", "reissueCooldownSeconds"}, o.Separator), 30, "seconds before a user may request another link code")
+	fs.String(names[0], "info", "log verbosity: debug, info, warn, or error")
+	fs.String(names[1], "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
+	fs.Int(names[2], 8080, "port the Discord interactions endpoint listens on")
+	fs.String(names[3], "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
+	fs.Int(names[4], 8081, "port the game webhook endpoint listens on; must NOT be published to the internet")
+	fs.String(names[5], "", "shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32")
+	fs.Bool(names[6], true, "serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this")
+	fs.Int(names[7], 9090, "TCP port for the metrics listener")
+	fs.Bool(names[8], false, "serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal")
+	fs.Int(names[9], 6060, "TCP port for the pprof listener")
+	fs.String(names[10], "", "connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too")
+	fs.Bool(names[11], true, "apply pending schema migrations on startup")
+	fs.Int(names[12], 16, "maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once")
+	fs.String(names[13], "", "bot token (required), used for the REST calls that post the feed and the board")
+	fs.String(names[14], "", "Discord application ID (required), used to register commands and edit deferred replies")
+	fs.String(names[15], "", "Ed25519 public key of the application as hex (required); every interaction is verified against it")
+	fs.String(names[16], "127.0.0.1", "hostname or IP of the Source RCON server")
+	fs.Int(names[17], 7779, "TCP port of the Source RCON server")
+	fs.String(names[18], "", "RCON password (required)")
+	fs.Int(names[19], 10, "deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response")
+	fs.Int(names[20], 4, "maximum RCON commands in flight at once; further callers fail fast rather than queue")
+	fs.Int(names[21], 1200, "rating every player starts at")
+	fs.Int(names[22], 40, "K factor while a player has fewer than provisionalGames rated kills")
+	fs.Int(names[23], 20, "K factor between provisionalGames and settlingGames")
+	fs.Int(names[24], 16, "K factor once a player passes settlingGames")
+	fs.Int(names[25], 20, "rated games before K drops from provisionalK to settlingK")
+	fs.Int(names[26], 50, "rated games before K drops from settlingK to stableK")
+	fs.Int(names[27], 30, "days a player may be idle before decay begins")
+	fs.Int(names[28], 5, "thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial")
+	fs.Int(names[29], 10, "seconds a player must wait between banking operations")
+	fs.Int(names[30], 5, "times to re-read a player's marks trying to confirm an unverified transfer before parking it for review")
+	fs.Int(names[31], 60, "seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed")
+	fs.Int(names[32], 20, "players listed on the leaderboard")
+	fs.Int(names[33], 30, "days to keep the raw webhook payload of a processed kill event; the event itself is kept forever")
+	fs.Int(names[34], 300, "seconds a link code stays valid")
+	fs.Int(names[35], 5, "wrong codes accepted before a challenge is burned")
+	fs.Int(names[36], 30, "seconds before a user may request another link code")
 	return nil
 }
-func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, set configulator.SetOrigin) error {
+func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep string, set configulator.SetOrigin) error {
 	if n := strings.Join([]string{"logLevel"}, o.Separator); fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
