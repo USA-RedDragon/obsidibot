@@ -186,7 +186,7 @@ func (h *harness) ledger(t *testing.T) []gen.BankLedger {
 func (h *harness) counted(t *testing.T, command, result string) float64 {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.metrics.Registry.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	h.metrics.Registry.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	want := fmt.Sprintf("obsidibot_game_commands_total{command=%q,result=%q} ", command, result)
 	for line := range strings.SplitSeq(rec.Body.String(), "\n") {
 		if !strings.HasPrefix(line, want) {

@@ -54,11 +54,11 @@ const (
 
 func (p *procSelf) describe() []desc {
 	return []desc{
-		{name: nameProcessCPU, help: "Total user and system CPU time spent in seconds.", typ: "counter"},
-		{name: nameProcessRSS, help: "Resident memory size in bytes.", typ: "gauge"},
-		{name: nameProcessVirtual, help: "Virtual memory size in bytes.", typ: "gauge"},
-		{name: nameProcessStart, help: "Start time of the process since the unix epoch in seconds.", typ: "gauge"},
-		{name: nameProcessFDs, help: "Number of open file descriptors.", typ: "gauge"},
+		{name: nameProcessCPU, help: "Total user and system CPU time spent in seconds.", typ: typeCounter},
+		{name: nameProcessRSS, help: "Resident memory size in bytes.", typ: typeGauge},
+		{name: nameProcessVirtual, help: "Virtual memory size in bytes.", typ: typeGauge},
+		{name: nameProcessStart, help: "Start time of the process since the unix epoch in seconds.", typ: typeGauge},
+		{name: nameProcessFDs, help: "Number of open file descriptors.", typ: typeGauge},
 	}
 }
 
@@ -88,23 +88,23 @@ func (p *procSelf) collect() []family {
 	utime, uok := parseField(fields, 13)
 	stime, sok := parseField(fields, 14)
 	if uok && sok {
-		add(nameProcessCPU, "Total user and system CPU time spent in seconds.", "counter",
+		add(nameProcessCPU, "Total user and system CPU time spent in seconds.", typeCounter,
 			(utime+stime)/p.clockTicks)
 	}
 	if vsize, ok := parseField(fields, 22); ok {
-		add(nameProcessVirtual, "Virtual memory size in bytes.", "gauge", vsize)
+		add(nameProcessVirtual, "Virtual memory size in bytes.", typeGauge, vsize)
 	}
 	if rss, ok := parseField(fields, 23); ok {
-		add(nameProcessRSS, "Resident memory size in bytes.", "gauge", rss*p.pageSize)
+		add(nameProcessRSS, "Resident memory size in bytes.", typeGauge, rss*p.pageSize)
 	}
 	if starttime, ok := parseField(fields, 21); ok {
 		if boot := p.boot(); boot > 0 {
-			add(nameProcessStart, "Start time of the process since the unix epoch in seconds.", "gauge",
+			add(nameProcessStart, "Start time of the process since the unix epoch in seconds.", typeGauge,
 				boot+starttime/p.clockTicks)
 		}
 	}
 	if fds, ok := openFDs(); ok {
-		add(nameProcessFDs, "Number of open file descriptors.", "gauge", fds)
+		add(nameProcessFDs, "Number of open file descriptors.", typeGauge, fds)
 	}
 	return families
 }

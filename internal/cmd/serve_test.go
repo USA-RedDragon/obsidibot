@@ -130,7 +130,7 @@ discord:
 rcon: {host: 127.0.0.1, port: %d, password: hunter2, timeoutSeconds: 2}
 leaderboard: {intervalSeconds: 5}
 `, base, base+1, base+2, base+3, dsn, databaseExtra, rconPort)
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil { //nolint:gosec // path is under t.TempDir
 		t.Fatalf("write config: %v", err)
 	}
 	return path

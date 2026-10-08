@@ -34,6 +34,12 @@ const (
 	feedFieldWrap = 1024     // Discord's per-field limit
 )
 
+// Feed field names shared by every notice.
+const (
+	fieldPlayer    = "Player"
+	fieldModerator = "Moderator"
+)
+
 // Kind selects which feed channel a notice belongs in.
 type Kind int
 
@@ -174,9 +180,9 @@ func WarnEmbed(warn gen.Warn, count int64) *discordgo.MessageEmbed {
 		Color:     colourWarn,
 		Timestamp: warn.CreatedAt.Format(discordTimeLayout),
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Player", Value: targetLabel(warn.AlderonID, warn.DiscordUserID, warn.TargetName)},
+			{Name: fieldPlayer, Value: targetLabel(warn.AlderonID, warn.DiscordUserID, warn.TargetName)},
 			{Name: "Reason", Value: reasonValue(warn.Reason)},
-			{Name: "Moderator", Value: moderatorLabel(warn.IssuedByDiscordID), Inline: true},
+			{Name: fieldModerator, Value: moderatorLabel(warn.IssuedByDiscordID), Inline: true},
 		},
 		Footer: &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("warning #%d for this player", count)},
 	}
@@ -191,10 +197,10 @@ func BanEmbed(ban gen.Ban, count int64, enforcement string) *discordgo.MessageEm
 		Color:     colourBan,
 		Timestamp: ban.CreatedAt.Format(discordTimeLayout),
 		Fields: []*discordgo.MessageEmbedField{
-			{Name: "Player", Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
+			{Name: fieldPlayer, Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
 			{Name: "Reason", Value: reasonValue(ban.Reason)},
 			{Name: "Expires", Value: FormatExpiry(ban.ExpiresAt), Inline: true},
-			{Name: "Moderator", Value: moderatorLabel(ban.IssuedByDiscordID), Inline: true},
+			{Name: fieldModerator, Value: moderatorLabel(ban.IssuedByDiscordID), Inline: true},
 			{Name: "Enforcement", Value: reasonValue(enforcement)},
 		},
 		Footer: &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("ban #%d for this player", count)},
@@ -204,9 +210,9 @@ func BanEmbed(ban gen.Ban, count int64, enforcement string) *discordgo.MessageEm
 // UnbanEmbed renders a ban lifted by a moderator.
 func UnbanEmbed(ban gen.Ban, byDiscordID, note string) *discordgo.MessageEmbed {
 	fields := []*discordgo.MessageEmbedField{
-		{Name: "Player", Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
+		{Name: fieldPlayer, Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
 		{Name: "Original reason", Value: reasonValue(ban.Reason)},
-		{Name: "Moderator", Value: moderatorLabel(byDiscordID), Inline: true},
+		{Name: fieldModerator, Value: moderatorLabel(byDiscordID), Inline: true},
 	}
 	if note != "" {
 		fields = append(fields, &discordgo.MessageEmbedField{Name: "Note", Value: reasonValue(note)})
@@ -223,7 +229,7 @@ func UnbanEmbed(ban gen.Ban, byDiscordID, note string) *discordgo.MessageEmbed {
 // can rejoin.
 func ExpiredEmbed(ban gen.Ban, note string) *discordgo.MessageEmbed {
 	fields := []*discordgo.MessageEmbedField{
-		{Name: "Player", Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
+		{Name: fieldPlayer, Value: targetLabel(ban.AlderonID, ban.DiscordUserID, ban.TargetName)},
 		{Name: "Original reason", Value: reasonValue(ban.Reason)},
 	}
 	if note != "" {

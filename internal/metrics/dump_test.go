@@ -49,7 +49,7 @@ func TestDumpScrape(t *testing.T) {
 		m.RCONCommandsTotal.WithLabelValues("whisper", "player-"+strconv.Itoa(i)).Inc()
 	}
 
-	if err := os.WriteFile(path, m.Registry.Gather(), 0o600); err != nil {
+	if err := os.WriteFile(path, m.Registry.Gather(), 0o600); err != nil { //nolint:gosec // DUMP_SCRAPE_TO is chosen by whoever runs the test
 		t.Fatalf("write dump: %v", err)
 	}
 }

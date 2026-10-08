@@ -268,7 +268,7 @@ func (h *harness) counted(t *testing.T, direction gen.BankDirection, result stri
 	rec := httptest.NewRecorder()
 	// The registry is itself the handler, so this is exactly the bytes a
 	// scrape would receive.
-	h.metrics.Registry.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	h.metrics.Registry.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 
 	want := fmt.Sprintf("obsidibot_bank_operations_total{direction=%q,result=%q} ", direction, result)
 	for line := range strings.SplitSeq(rec.Body.String(), "\n") {

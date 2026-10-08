@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ func signed(t *testing.T, priv ed25519.PrivateKey, body []byte) *http.Request {
 	t.Helper()
 	timestamp := signTimestamp
 	sig := ed25519.Sign(priv, append([]byte(timestamp), body...))
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(string(body)))
 	req.Header.Set("X-Signature-Ed25519", hex.EncodeToString(sig))
 	req.Header.Set("X-Signature-Timestamp", timestamp)
 	return req
@@ -180,8 +181,7 @@ func TestUnsignedRequestsAreRefused(t *testing.T) {
 		}, body},
 		{"body swapped after signing", func(r *http.Request) {
 			r.Body = http.NoBody
-			r.Body = httptest.NewRequest(http.MethodPost, "/",
-				strings.NewReader(`{"type":2,"data":{"name":"ping"}}`)).Body
+			r.Body = io.NopCloser(strings.NewReader(`{"type":2,"data":{"name":"ping"}}`))
 		}, body},
 	}
 
@@ -582,7 +582,7 @@ func TestHealthEndpoints(t *testing.T) {
 		})
 
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil))
 
 		if rec.Code != http.StatusOK {
 			t.Errorf("status %d, want 200 even with the database down", rec.Code)
@@ -595,7 +595,7 @@ func TestHealthEndpoints(t *testing.T) {
 	t.Run("readyz reports the database", func(t *testing.T) {
 		handler := serveMux(t, router, func(context.Context) error { return nil })
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 		if rec.Code != http.StatusOK {
 			t.Errorf("status %d, want 200", rec.Code)
 		}
@@ -606,7 +606,7 @@ func TestHealthEndpoints(t *testing.T) {
 			return errors.New("database: connection refused")
 		})
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", nil))
 
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("status %d, want 503", rec.Code)
@@ -625,7 +625,7 @@ func TestHealthEndpoints(t *testing.T) {
 		// signature verifier.
 		handler := serveMux(t, router, func(context.Context) error { return nil })
 		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nonsense", nil))
+		handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/nonsense", nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("status %d for an unknown path, want 404", rec.Code)
 		}

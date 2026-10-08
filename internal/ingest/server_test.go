@@ -462,6 +462,6 @@ func TestRefusedDeliveriesAreCounted(t *testing.T) {
 func scrape(t *testing.T, m *metrics.Metrics) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	m.Registry.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	m.Registry.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	return rec.Body.String()
 }

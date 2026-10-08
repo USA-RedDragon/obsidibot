@@ -32,6 +32,12 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/server"
 )
 
+// Label names shared by several families.
+const (
+	labelCommand = "command"
+	labelResult  = "result"
+)
+
 // Results for the "result" label. They are a closed set on purpose.
 const (
 	// ResultOK is a request or operation that completed as intended.
@@ -138,15 +144,15 @@ func New() *Metrics {
 		InteractionsTotal: r.NewCounterVec(
 			"obsidibot_interactions_total",
 			"Handled Discord interactions by command and result.",
-			[]string{"command", "result"}),
+			[]string{labelCommand, labelResult}),
 		InteractionDuration: r.NewHistogramVec(
 			"obsidibot_interaction_duration_seconds",
 			"Time to produce a command's final response, deferred work included.",
-			[]string{"command"}, latencyBuckets()),
+			[]string{labelCommand}, latencyBuckets()),
 		RCONCommandsTotal: r.NewCounterVec(
 			"obsidibot_rcon_commands_total",
 			"RCON commands by verb and result. The verb never carries its arguments.",
-			[]string{"command", "result"}),
+			[]string{labelCommand, labelResult}),
 		RCONDuration: r.NewHistogram(
 			"obsidibot_rcon_duration_seconds",
 			"Latency of one RCON exchange in seconds.",
@@ -154,7 +160,7 @@ func New() *Metrics {
 		KillEventsIngestedTotal: r.NewCounterVec(
 			"obsidibot_kill_events_ingested_total",
 			"Inbound PlayerKilled webhook deliveries by result: ok, duplicate, rejected, error.",
-			[]string{"result"}),
+			[]string{labelResult}),
 		KillFeedBacklog: r.NewGauge(
 			"obsidibot_kill_feed_backlog",
 			"Kill events accepted but not yet posted to Discord. The feed is lossless, so this grows rather than dropping."),
@@ -168,7 +174,7 @@ func New() *Metrics {
 		BankOperationsTotal: r.NewCounterVec(
 			"obsidibot_bank_operations_total",
 			"Banking operations by direction and result.",
-			[]string{"direction", "result"}),
+			[]string{"direction", labelResult}),
 		BankNeedsReview: r.NewGauge(
 			"obsidibot_bank_needs_review",
 			"Ledger rows parked for review because a transfer could not be confirmed. Alert on nonzero."),
@@ -185,11 +191,11 @@ func New() *Metrics {
 		GameCommandsTotal: r.NewCounterVec(
 			"obsidibot_game_commands_total",
 			"In-game commands dispatched from the PlayerCommand webhook, by command and result.",
-			[]string{"command", "result"}),
+			[]string{labelCommand, labelResult}),
 		ModerationActionsTotal: r.NewCounterVec(
 			"obsidibot_moderation_actions_total",
 			"Moderation actions by kind (warn, ban, unban, expire) and result.",
-			[]string{"kind", "result"}),
+			[]string{"kind", labelResult}),
 		ModerationUnenforcedBans: r.NewGauge(
 			"obsidibot_moderation_unenforced_bans",
 			"Active bans not yet enforced in game. Alert on sustained nonzero."),

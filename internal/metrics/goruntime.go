@@ -37,49 +37,49 @@ func newGoRuntime() *goRuntime {
 		{
 			name:   "go_goroutines",
 			help:   "Goroutines that currently exist.",
-			typ:    "gauge",
+			typ:    typeGauge,
 			sample: "/sched/goroutines:goroutines",
 		},
 		{
 			name:   "go_gomaxprocs",
 			help:   "Current GOMAXPROCS setting: the number of goroutines that may run simultaneously.",
-			typ:    "gauge",
+			typ:    typeGauge,
 			sample: "/sched/gomaxprocs:threads",
 		},
 		{
 			name:   "go_memstats_alloc_bytes",
 			help:   "Bytes of live heap objects.",
-			typ:    "gauge",
+			typ:    typeGauge,
 			sample: "/memory/classes/heap/objects:bytes",
 		},
 		{
 			name:   "go_memstats_alloc_bytes_total",
 			help:   "Cumulative bytes allocated for heap objects since the process started.",
-			typ:    "counter",
+			typ:    typeCounter,
 			sample: "/gc/heap/allocs:bytes",
 		},
 		{
 			name:   "go_memstats_sys_bytes",
 			help:   "Bytes of memory obtained from the OS.",
-			typ:    "gauge",
+			typ:    typeGauge,
 			sample: "/memory/classes/total:bytes",
 		},
 		{
 			name:   "go_memstats_heap_objects",
 			help:   "Number of live heap objects.",
-			typ:    "gauge",
+			typ:    typeGauge,
 			sample: "/gc/heap/objects:objects",
 		},
 		{
 			name:   "go_gc_cycles_total",
 			help:   "Completed GC cycles since the process started.",
-			typ:    "counter",
+			typ:    typeCounter,
 			sample: "/gc/cycles/total:gc-cycles",
 		},
 		{
 			name:   "go_gc_cpu_seconds_total",
 			help:   "CPU seconds spent in garbage collection since the process started. Compare against go_gomaxprocs times uptime.",
-			typ:    "counter",
+			typ:    typeCounter,
 			sample: "/cpu/classes/gc/total:cpu-seconds",
 		},
 	}}
@@ -97,7 +97,7 @@ func (gr *goRuntime) describe() []desc {
 	out = append(out, desc{
 		name: goInfoName,
 		help: "Information about the Go environment this binary was built with.",
-		typ:  "gauge",
+		typ:  typeGauge,
 	})
 	return out
 }
@@ -133,7 +133,7 @@ func (gr *goRuntime) collect() []family {
 		d: desc{
 			name: goInfoName,
 			help: "Information about the Go environment this binary was built with.",
-			typ:  "gauge",
+			typ:  typeGauge,
 		},
 		groups: []seriesGroup{{key: version, lines: appendSample(nil, goInfoName, "", version, 1)}},
 	})

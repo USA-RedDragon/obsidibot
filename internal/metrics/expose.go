@@ -24,6 +24,12 @@ const bucketSuffix = "_bucket"
 // a float but "Inf" for some formats.
 const positiveInf = "+Inf"
 
+// Metric family types, as a "# TYPE" line spells them.
+const (
+	typeCounter = "counter"
+	typeGauge   = "gauge"
+)
+
 // desc is a metric family's immutable identity: what a scrape sees in its
 // "# HELP" and "# TYPE" lines.
 type desc struct {
@@ -147,7 +153,7 @@ func validIdent(s string, allowColon bool) bool {
 func (r *Registry) NewCounterVec(name, help string, labelNames []string) *CounterVec {
 	checkLabelNames(name, labelNames)
 	cv := &CounterVec{
-		d: desc{name: name, help: help, typ: "counter"},
+		d: desc{name: name, help: help, typ: typeCounter},
 		v: newVec(name, labelNames, func(pairs string) *Counter {
 			return &Counter{pairs: pairs}
 		}),
@@ -165,7 +171,7 @@ func (r *Registry) NewCounter(name, help string) *Counter {
 // NewGauge registers and returns a single unlabelled gauge.
 func (r *Registry) NewGauge(name, help string) *Gauge {
 	gf := &gaugeFamily{
-		d: desc{name: name, help: help, typ: "gauge"},
+		d: desc{name: name, help: help, typ: typeGauge},
 		g: &Gauge{},
 	}
 	r.register(gf)

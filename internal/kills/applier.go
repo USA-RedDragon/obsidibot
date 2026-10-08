@@ -421,7 +421,7 @@ func (p *Pruner) Run(ctx context.Context) error {
 			int32(p.cfg.KillFeed.RetentionDays)) //nolint:gosec // bounded by config validation
 		switch {
 		case err != nil && ctx.Err() != nil:
-			return nil
+			return nil //nolint:nilerr // shutting down, not failing
 		case err != nil:
 			slog.ErrorContext(ctx, "could not prune kill events", "error", err)
 		case rows > 0:
