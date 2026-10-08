@@ -1,5 +1,6 @@
 /obsidibot
 /coverage.out
+/coverage.raw
 /config.yaml
 
 # Agent scratch worktrees

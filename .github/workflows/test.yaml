@@ -136,7 +136,7 @@ jobs:
   backend-unit-tests-coverage:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       checks: write
       pull-requests: write
 
@@ -177,7 +177,8 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/obsidibot
         run: |
-          env CGO_ENABLED=0 go test -v ./... -coverprofile coverage.out -coverpkg=./... -covermode atomic
+          env CGO_ENABLED=0 go test -v ./... -coverprofile coverage.raw -coverpkg=./... -covermode atomic
+          grep -v -e '_configulator\.go:' coverage.raw > coverage.out
 
       - name: Report coverage
         if: always()
