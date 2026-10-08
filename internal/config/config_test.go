@@ -17,7 +17,7 @@ func valid() Config {
 		Ingest:       Ingest{Port: 8081, Secret: testSecret},
 		Metrics:      Metrics{Enabled: true, Port: 9090},
 		PProf:        PProf{Enabled: false, Port: 6060},
-		Database:     Database{URL: "postgres://user:pass@host:5432/obsidibot", MaxConns: 16},
+		Database:     Database{URL: "postgres://user:pass@host:5432/obsidibot", MaxConns: 16}, //nolint:gosec // fixture URL
 		Discord: Discord{
 			Token:         "token",
 			ApplicationID: "12345",

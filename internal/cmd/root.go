@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/SRS-Hosting/rcon"
-	"github.com/USA-RedDragon/configulator"
+	configulator "github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/obsidibot/internal/bank"
 	"github.com/USA-RedDragon/obsidibot/internal/board"
 	"github.com/USA-RedDragon/obsidibot/internal/commands"
@@ -29,6 +29,7 @@ import (
 	"github.com/USA-RedDragon/obsidibot/internal/pot"
 	obsidipprof "github.com/USA-RedDragon/obsidibot/internal/pprof"
 	"github.com/bwmarrin/discordgo"
+	"github.com/goccy/go-yaml"
 	"github.com/lmittmann/tint"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -66,15 +67,6 @@ writer coordinate through Postgres advisory locks.`,
 
 func run(cmd *cobra.Command, migrations fs.FS) error {
 	ctx := cmd.Context()
-
-	// configulator skips a config file it cannot find, which is right for the
-	// default path but wrong for one the operator named explicitly: a typo'd
-	// --config would otherwise start silently on defaults, looking like it worked.
-	if flag := cmd.Flags().Lookup(configulator.ConfigFileKey); flag != nil && flag.Changed {
-		if _, err := os.Stat(flag.Value.String()); err != nil {
-			return fmt.Errorf("config file %s: %w", flag.Value.String(), err)
-		}
-	}
 
 	c, err := configulator.FromContext[config.Config](ctx)
 	if err != nil {
@@ -150,9 +142,12 @@ func WithDiscordHTTPClient(client *http.Client) Option {
 // test -- several instances at once, against one database -- without going
 // through the process-global flag state cobra owns.
 func Serve(ctx context.Context, configPath string, migrations fs.FS, opts ...Option) error {
-	c := configulator.New[config.Config]().
+	c := configulator.New(config.ConfigSchema()).
 		WithEnvironmentVariables(&configulator.EnvironmentVariableOptions{Separator: "_"}).
-		WithFile(&configulator.FileOptions{Paths: []string{configPath}})
+		WithFile(&configulator.FileOptions{
+			Search:   []string{configPath},
+			Decoders: configulator.Decoders{".yaml": yaml.Unmarshal, ".yml": yaml.Unmarshal},
+		})
 
 	// Load validates before it returns -- configulator calls Config.Validate
 	// itself -- so a bad file is refused here, with every problem at once.

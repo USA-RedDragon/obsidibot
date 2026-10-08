@@ -9,6 +9,8 @@
 // fields with strconv, so a "5s" default would not load.
 package config
 
+//go:generate go tool configulator -type Config
+
 import (
 	"errors"
 	"fmt"
@@ -100,7 +102,7 @@ type Ingest struct {
 	Port int    `name:"port" default:"8081" description:"port the game webhook endpoint listens on; must NOT be published to the internet"`
 	// Secret is carried in the URL path because the game offers no other place
 	// to put a credential: it sends no signature and no configurable headers.
-	Secret string `name:"secret" description:"shared secret embedded in the webhook path (required); generate with openssl rand -hex 32"`
+	Secret string `name:"secret" description:"shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32"`
 }
 
 func (i Ingest) validate() []error {
@@ -123,7 +125,7 @@ func (i Ingest) validate() []error {
 
 // Metrics configures the Prometheus metrics listener.
 type Metrics struct {
-	Enabled bool `name:"enabled" default:"true" description:"serve Prometheus metrics and health endpoints"`
+	Enabled bool `name:"enabled" default:"true" description:"serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this"`
 	Port    int  `name:"port" default:"9090" description:"TCP port for the metrics listener"`
 }
 
@@ -137,7 +139,7 @@ func (m Metrics) validate() []error {
 
 // PProf configures the pprof debug listener.
 type PProf struct {
-	Enabled bool `name:"enabled" default:"false" description:"serve pprof profiling endpoints"`
+	Enabled bool `name:"enabled" default:"false" description:"serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal"`
 	Port    int  `name:"port" default:"6060" description:"TCP port for the pprof listener"`
 }
 
@@ -284,7 +286,7 @@ type Rating struct {
 	DecayGraceDays   int `name:"decayGraceDays" default:"30" description:"days a player may be idle before decay begins"`
 	// Expressed as a permille of the gap to Initial so an integer setting can
 	// still express a slow drift; 5 is half a percent of the gap per day.
-	DecayPermillePerDay int `name:"decayPermillePerDay" default:"5" description:"thousandths of the gap to initial that an idle rating decays per day past the grace period"`
+	DecayPermillePerDay int `name:"decayPermillePerDay" default:"5" description:"thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial"`
 }
 
 func (r Rating) validate() []error {
@@ -356,7 +358,7 @@ func (b Bank) validate() []error {
 
 // Leaderboard configures the persistent top-N message.
 type Leaderboard struct {
-	IntervalSeconds int `name:"intervalSeconds" default:"60" description:"seconds between leaderboard message refreshes"`
+	IntervalSeconds int `name:"intervalSeconds" default:"60" description:"seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed"`
 	Size            int `name:"size" default:"20" description:"players listed on the leaderboard"`
 }
 
