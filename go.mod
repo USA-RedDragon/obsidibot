@@ -1,6 +1,6 @@
 module github.com/USA-RedDragon/obsidibot
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/SRS-Hosting/rcon v0.0.5
