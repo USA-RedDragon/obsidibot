@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/USA-RedDragon/configulator"
+	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/obsidibot/internal/cmd"
 	"github.com/USA-RedDragon/obsidibot/internal/config"
 )

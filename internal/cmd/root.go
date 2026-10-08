@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/SRS-Hosting/rcon"
-	"github.com/USA-RedDragon/configulator"
+	"github.com/USA-RedDragon/configulator/v2"
 	"github.com/USA-RedDragon/obsidibot/internal/bank"
 	"github.com/USA-RedDragon/obsidibot/internal/board"
 	"github.com/USA-RedDragon/obsidibot/internal/commands"
