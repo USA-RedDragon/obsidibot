@@ -48,11 +48,9 @@ linters:
       - legacy
       - std-error-handling
     rules:
-      # Test fixtures repeat literal IDs, names and payload fields on purpose.
       - path: _test\.go$
         linters:
           - goconst
-      # The generated loader repeats every config key as a literal.
       - path: internal/config/config\.go$
         linters:
           - goconst

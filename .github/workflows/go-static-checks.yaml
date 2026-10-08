@@ -30,11 +30,6 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # sqlc-generated code is committed under internal/db/gen; regenerating
-      # from schema/migrations must be a no-op or the check fails. The
-      # `git add -N` registers brand-new (untracked) generated files as
-      # intent-to-add so the diff catches them too, not just edits to
-      # already-tracked files.
       - name: Check sqlc generated code for drift
         run: |
           go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
