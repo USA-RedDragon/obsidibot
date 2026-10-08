@@ -75,7 +75,7 @@ type Config struct {
 
 // Interactions configures the public listener Discord delivers interactions to.
 type Interactions struct {
-	Bind string `name:"bind" default:"" description:"address to listen on; empty listens on all interfaces over both IPv4 and IPv6"`
+	Bind string `name:"bind" description:"address to listen on; empty listens on all interfaces over both IPv4 and IPv6"`
 	Port int    `name:"port" default:"8080" description:"port the Discord interactions endpoint listens on"`
 }
 
@@ -95,7 +95,7 @@ func (i Interactions) validate() []error {
 // ports lets an ingress publish the interactions port alone, so an attacker has
 // to already be inside the cluster before the secret is even the question.
 type Ingest struct {
-	Bind string `name:"bind" default:"" description:"address to listen on; empty listens on all interfaces over both IPv4 and IPv6"`
+	Bind string `name:"bind" description:"address to listen on; empty listens on all interfaces over both IPv4 and IPv6"`
 	Port int    `name:"port" default:"8081" description:"port the game webhook endpoint listens on; must NOT be published to the internet"`
 	// Secret is carried in the URL path because the game offers no other place
 	// to put a credential: it sends no signature and no configurable headers.
