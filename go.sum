@@ -1,7 +1,7 @@
 github.com/SRS-Hosting/rcon v0.0.5 h1:aGj308mnMDGU0g/w1mdlBfNicytpc6LCarzVnqg4smM=
 github.com/SRS-Hosting/rcon v0.0.5/go.mod h1:rKcFbGxkQD2h6GTN5w8fmUFZ7DuFvLOAh9nUpy3MVZ8=
-github.com/USA-RedDragon/configulator/v2 v2.3.2 h1:YtKerDZuMQNEysvXkohcj/nOXSYJCe2ECmaZhcmjiW8=
-github.com/USA-RedDragon/configulator/v2 v2.3.2/go.mod h1:L/HGK6Bf1Wr7dbBibAW0zpXhvG0A+7cMI0U9Rz9Hplg=
+github.com/USA-RedDragon/configulator/v2 v2.4.0 h1:dfaf5zWAErLoHutBkMNXM8bo5/YSzuHDzJ/rtN4QKkE=
+github.com/USA-RedDragon/configulator/v2 v2.4.0/go.mod h1:L/HGK6Bf1Wr7dbBibAW0zpXhvG0A+7cMI0U9Rz9Hplg=
 github.com/bwmarrin/discordgo v0.29.0 h1:FmWeXFaKUwrcL3Cx65c20bTRW+vOb6k8AnaP+EgjDno=
 github.com/bwmarrin/discordgo v0.29.0/go.mod h1:NJZpH+1AfhIcyQsPeuBKsUtYrRnjkyu0kIVMCHkZtRY=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=

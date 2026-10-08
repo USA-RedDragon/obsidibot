@@ -5,91 +5,106 @@
 package config
 
 import (
-	jsontext "encoding/json/jsontext"
-	v2 "encoding/json/v2"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
-	configulator "github.com/USA-RedDragon/configulator/v2"
-	cpflag "github.com/USA-RedDragon/configulator/v2/flags/pflag"
-	"github.com/spf13/pflag"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/USA-RedDragon/configulator/v2"
+	cpflag "github.com/USA-RedDragon/configulator/v2/flags/pflag"
+	"github.com/USA-RedDragon/configulator/v2/impl"
+	"github.com/spf13/pflag"
 )
 
 type interactionsShadow struct {
 	Bind *string `json:"bind" toml:"bind" yaml:"bind"`
 	Port *int    `json:"port" toml:"port" yaml:"port"`
 }
+
 type ingestShadow struct {
-	Bind   *string `json:"bind" toml:"bind" yaml:"bind"`
-	Port   *int    `json:"port" toml:"port" yaml:"port"`
+	Bind   *string `json:"bind"   toml:"bind"   yaml:"bind"`
+	Port   *int    `json:"port"   toml:"port"   yaml:"port"`
 	Secret *string `json:"secret" toml:"secret" yaml:"secret"`
 }
+
 type metricsShadow struct {
 	Enabled *bool `json:"enabled" toml:"enabled" yaml:"enabled"`
-	Port    *int  `json:"port" toml:"port" yaml:"port"`
+	Port    *int  `json:"port"    toml:"port"    yaml:"port"`
 }
+
 type pProfShadow struct {
 	Enabled *bool `json:"enabled" toml:"enabled" yaml:"enabled"`
-	Port    *int  `json:"port" toml:"port" yaml:"port"`
+	Port    *int  `json:"port"    toml:"port"    yaml:"port"`
 }
+
 type databaseShadow struct {
-	URL            *string `json:"url" toml:"url" yaml:"url"`
+	URL            *string `json:"url"            toml:"url"            yaml:"url"`
 	MigrateOnStart *bool   `json:"migrateOnStart" toml:"migrateOnStart" yaml:"migrateOnStart"`
-	MaxConns       *int    `json:"maxConns" toml:"maxConns" yaml:"maxConns"`
+	MaxConns       *int    `json:"maxConns"       toml:"maxConns"       yaml:"maxConns"`
 }
+
 type discordShadow struct {
-	Token         *string `json:"token" toml:"token" yaml:"token"`
+	Token         *string `json:"token"         toml:"token"         yaml:"token"`
 	ApplicationID *string `json:"applicationId" toml:"applicationId" yaml:"applicationId"`
-	PublicKey     *string `json:"publicKey" toml:"publicKey" yaml:"publicKey"`
+	PublicKey     *string `json:"publicKey"     toml:"publicKey"     yaml:"publicKey"`
 }
+
 type rCONShadow struct {
-	Host           *string `json:"host" toml:"host" yaml:"host"`
-	Port           *int    `json:"port" toml:"port" yaml:"port"`
-	Password       *string `json:"password" toml:"password" yaml:"password"`
+	Host           *string `json:"host"           toml:"host"           yaml:"host"`
+	Port           *int    `json:"port"           toml:"port"           yaml:"port"`
+	Password       *string `json:"password"       toml:"password"       yaml:"password"`
 	TimeoutSeconds *int    `json:"timeoutSeconds" toml:"timeoutSeconds" yaml:"timeoutSeconds"`
-	MaxConcurrent  *int    `json:"maxConcurrent" toml:"maxConcurrent" yaml:"maxConcurrent"`
+	MaxConcurrent  *int    `json:"maxConcurrent"  toml:"maxConcurrent"  yaml:"maxConcurrent"`
 }
+
 type ratingShadow struct {
-	Initial             *int `json:"initial" toml:"initial" yaml:"initial"`
-	ProvisionalK        *int `json:"provisionalK" toml:"provisionalK" yaml:"provisionalK"`
-	SettlingK           *int `json:"settlingK" toml:"settlingK" yaml:"settlingK"`
-	StableK             *int `json:"stableK" toml:"stableK" yaml:"stableK"`
-	ProvisionalGames    *int `json:"provisionalGames" toml:"provisionalGames" yaml:"provisionalGames"`
-	SettlingGames       *int `json:"settlingGames" toml:"settlingGames" yaml:"settlingGames"`
-	DecayGraceDays      *int `json:"decayGraceDays" toml:"decayGraceDays" yaml:"decayGraceDays"`
+	Initial             *int `json:"initial"             toml:"initial"             yaml:"initial"`
+	ProvisionalK        *int `json:"provisionalK"        toml:"provisionalK"        yaml:"provisionalK"`
+	SettlingK           *int `json:"settlingK"           toml:"settlingK"           yaml:"settlingK"`
+	StableK             *int `json:"stableK"             toml:"stableK"             yaml:"stableK"`
+	ProvisionalGames    *int `json:"provisionalGames"    toml:"provisionalGames"    yaml:"provisionalGames"`
+	SettlingGames       *int `json:"settlingGames"       toml:"settlingGames"       yaml:"settlingGames"`
+	DecayGraceDays      *int `json:"decayGraceDays"      toml:"decayGraceDays"      yaml:"decayGraceDays"`
 	DecayPermillePerDay *int `json:"decayPermillePerDay" toml:"decayPermillePerDay" yaml:"decayPermillePerDay"`
 }
+
 type bankShadow struct {
 	CooldownSeconds *int `json:"cooldownSeconds" toml:"cooldownSeconds" yaml:"cooldownSeconds"`
-	VerifyAttempts  *int `json:"verifyAttempts" toml:"verifyAttempts" yaml:"verifyAttempts"`
+	VerifyAttempts  *int `json:"verifyAttempts"  toml:"verifyAttempts"  yaml:"verifyAttempts"`
 }
+
 type leaderboardShadow struct {
 	IntervalSeconds *int `json:"intervalSeconds" toml:"intervalSeconds" yaml:"intervalSeconds"`
-	Size            *int `json:"size" toml:"size" yaml:"size"`
+	Size            *int `json:"size"            toml:"size"            yaml:"size"`
 }
+
 type killFeedShadow struct {
 	RetentionDays *int `json:"retentionDays" toml:"retentionDays" yaml:"retentionDays"`
 }
+
 type linkShadow struct {
-	CodeTTLSeconds         *int `json:"codeTTLSeconds" toml:"codeTTLSeconds" yaml:"codeTTLSeconds"`
-	MaxAttempts            *int `json:"maxAttempts" toml:"maxAttempts" yaml:"maxAttempts"`
+	CodeTTLSeconds         *int `json:"codeTTLSeconds"         toml:"codeTTLSeconds"         yaml:"codeTTLSeconds"`
+	MaxAttempts            *int `json:"maxAttempts"            toml:"maxAttempts"            yaml:"maxAttempts"`
 	ReissueCooldownSeconds *int `json:"reissueCooldownSeconds" toml:"reissueCooldownSeconds" yaml:"reissueCooldownSeconds"`
 }
+
 type configShadow struct {
-	LogLevel     *string             `json:"logLevel" toml:"logLevel" yaml:"logLevel"`
+	LogLevel     *string             `json:"logLevel"     toml:"logLevel"     yaml:"logLevel"`
 	Interactions *interactionsShadow `json:"interactions" toml:"interactions" yaml:"interactions"`
-	Ingest       *ingestShadow       `json:"ingest" toml:"ingest" yaml:"ingest"`
-	Metrics      *metricsShadow      `json:"metrics" toml:"metrics" yaml:"metrics"`
-	PProf        *pProfShadow        `json:"pprof" toml:"pprof" yaml:"pprof"`
-	Database     *databaseShadow     `json:"database" toml:"database" yaml:"database"`
-	Discord      *discordShadow      `json:"discord" toml:"discord" yaml:"discord"`
-	RCON         *rCONShadow         `json:"rcon" toml:"rcon" yaml:"rcon"`
-	Rating       *ratingShadow       `json:"rating" toml:"rating" yaml:"rating"`
-	Bank         *bankShadow         `json:"bank" toml:"bank" yaml:"bank"`
-	Leaderboard  *leaderboardShadow  `json:"leaderboard" toml:"leaderboard" yaml:"leaderboard"`
-	KillFeed     *killFeedShadow     `json:"killfeed" toml:"killfeed" yaml:"killfeed"`
-	Link         *linkShadow         `json:"link" toml:"link" yaml:"link"`
+	Ingest       *ingestShadow       `json:"ingest"       toml:"ingest"       yaml:"ingest"`
+	Metrics      *metricsShadow      `json:"metrics"      toml:"metrics"      yaml:"metrics"`
+	PProf        *pProfShadow        `json:"pprof"        toml:"pprof"        yaml:"pprof"`
+	Database     *databaseShadow     `json:"database"     toml:"database"     yaml:"database"`
+	Discord      *discordShadow      `json:"discord"      toml:"discord"      yaml:"discord"`
+	RCON         *rCONShadow         `json:"rcon"         toml:"rcon"         yaml:"rcon"`
+	Rating       *ratingShadow       `json:"rating"       toml:"rating"       yaml:"rating"`
+	Bank         *bankShadow         `json:"bank"         toml:"bank"         yaml:"bank"`
+	Leaderboard  *leaderboardShadow  `json:"leaderboard"  toml:"leaderboard"  yaml:"leaderboard"`
+	KillFeed     *killFeedShadow     `json:"killfeed"     toml:"killfeed"     yaml:"killfeed"`
+	Link         *linkShadow         `json:"link"         toml:"link"         yaml:"link"`
 }
 
 // ConfigSchema returns the generated schema for Config.
@@ -100,7 +115,8 @@ func ConfigSchema() *configulator.Schema[Config] {
 		DecodeFile:    configDecodeFile,
 	}
 }
-func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) error {
+
+func configApplyDefaults(cfg *Config, _ string, set configulator.SetOrigin) error {
 	cfg.LogLevel = LogLevel("info")
 	set("logLevel", configulator.LayerDefault, "default tag")
 	cfg.Interactions.Port = 8080
@@ -161,6 +177,7 @@ func configApplyDefaults(cfg *Config, sep string, set configulator.SetOrigin) er
 	set("link.reissueCooldownSeconds", configulator.LayerDefault, "default tag")
 	return nil
 }
+
 func configDecodeFile(data []byte, u configulator.Unmarshal, cfg *Config, sep string, set configulator.SetOrigin, file string) error {
 	var sh configShadow
 	if err := u(data, &sh); err != nil {
@@ -171,7 +188,8 @@ func configDecodeFile(data []byte, u configulator.Unmarshal, cfg *Config, sep st
 	}
 	return sh.applyTo(cfg, sep, set, file)
 }
-func (s *configShadow) applyTo(cfg *Config, sep string, set configulator.SetOrigin, file string) error {
+
+func (s *configShadow) applyTo(cfg *Config, _ string, set configulator.SetOrigin, file string) error {
 	if s.LogLevel != nil {
 		cfg.LogLevel = LogLevel(*s.LogLevel)
 		set("logLevel", configulator.LayerFile, file)
@@ -346,471 +364,398 @@ func (s *configShadow) applyTo(cfg *Config, sep string, set configulator.SetOrig
 	}
 	return nil
 }
+
 func configApplyEnv(cfg *Config, ec configulator.EnvContext, set configulator.SetOrigin) error {
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "logLevel"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.LogLevel = LogLevel(v)
-			set("logLevel", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "logLevel"); ok {
+		cfg.LogLevel = LogLevel(v)
+		set("logLevel", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "interactions", "bind"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Interactions.Bind = v
-			set("interactions.bind", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "interactions", "bind"); ok {
+		cfg.Interactions.Bind = v
+		set("interactions.bind", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "interactions", "port"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "interactions.port",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "interactions", "port"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "interactions.port",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Interactions.Port = int(p)
-			set("interactions.port", configulator.LayerEnv, n)
 		}
+		cfg.Interactions.Port = int(p)
+		set("interactions.port", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "ingest", "bind"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Ingest.Bind = v
-			set("ingest.bind", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ingest", "bind"); ok {
+		cfg.Ingest.Bind = v
+		set("ingest.bind", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "ingest", "port"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "ingest.port",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ingest", "port"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "ingest.port",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Ingest.Port = int(p)
-			set("ingest.port", configulator.LayerEnv, n)
 		}
+		cfg.Ingest.Port = int(p)
+		set("ingest.port", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "ingest", "secret"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Ingest.Secret = v
-			set("ingest.secret", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "ingest", "secret"); ok {
+		cfg.Ingest.Secret = v
+		set("ingest.secret", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "metrics", "enabled"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseBool(v)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "metrics.enabled",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "metrics", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "metrics.enabled",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Metrics.Enabled = p
-			set("metrics.enabled", configulator.LayerEnv, n)
 		}
+		cfg.Metrics.Enabled = p
+		set("metrics.enabled", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "metrics", "port"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "metrics.port",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "metrics", "port"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "metrics.port",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Metrics.Port = int(p)
-			set("metrics.port", configulator.LayerEnv, n)
 		}
+		cfg.Metrics.Port = int(p)
+		set("metrics.port", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "pprof", "enabled"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseBool(v)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "pprof.enabled",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "pprof", "enabled"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "pprof.enabled",
+				Source: n,
+				Value:  v,
 			}
-			cfg.PProf.Enabled = p
-			set("pprof.enabled", configulator.LayerEnv, n)
 		}
+		cfg.PProf.Enabled = p
+		set("pprof.enabled", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "pprof", "port"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "pprof.port",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "pprof", "port"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "pprof.port",
+				Source: n,
+				Value:  v,
 			}
-			cfg.PProf.Port = int(p)
-			set("pprof.port", configulator.LayerEnv, n)
 		}
+		cfg.PProf.Port = int(p)
+		set("pprof.port", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "database", "url"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Database.URL = v
-			set("database.url", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "database", "url"); ok {
+		cfg.Database.URL = v
+		set("database.url", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "database", "migrateOnStart"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseBool(v)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "database.migrateOnStart",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "database", "migrateOnStart"); ok {
+		p, err := strconv.ParseBool(v)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "database.migrateOnStart",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Database.MigrateOnStart = p
-			set("database.migrateOnStart", configulator.LayerEnv, n)
 		}
+		cfg.Database.MigrateOnStart = p
+		set("database.migrateOnStart", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "database", "maxConns"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "database.maxConns",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "database", "maxConns"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "database.maxConns",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Database.MaxConns = int(p)
-			set("database.maxConns", configulator.LayerEnv, n)
 		}
+		cfg.Database.MaxConns = int(p)
+		set("database.maxConns", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "discord", "token"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Discord.Token = v
-			set("discord.token", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "discord", "token"); ok {
+		cfg.Discord.Token = v
+		set("discord.token", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "discord", "applicationId"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Discord.ApplicationID = v
-			set("discord.applicationId", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "discord", "applicationId"); ok {
+		cfg.Discord.ApplicationID = v
+		set("discord.applicationId", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "discord", "publicKey"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.Discord.PublicKey = v
-			set("discord.publicKey", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "discord", "publicKey"); ok {
+		cfg.Discord.PublicKey = v
+		set("discord.publicKey", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rcon", "host"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.RCON.Host = v
-			set("rcon.host", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rcon", "host"); ok {
+		cfg.RCON.Host = v
+		set("rcon.host", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rcon", "port"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rcon.port",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rcon", "port"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rcon.port",
+				Source: n,
+				Value:  v,
 			}
-			cfg.RCON.Port = int(p)
-			set("rcon.port", configulator.LayerEnv, n)
 		}
+		cfg.RCON.Port = int(p)
+		set("rcon.port", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rcon", "password"); true {
-		if v, ok := ec.Getenv(n); ok {
-			cfg.RCON.Password = v
-			set("rcon.password", configulator.LayerEnv, n)
-		}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rcon", "password"); ok {
+		cfg.RCON.Password = v
+		set("rcon.password", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rcon", "timeoutSeconds"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rcon.timeoutSeconds",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rcon", "timeoutSeconds"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rcon.timeoutSeconds",
+				Source: n,
+				Value:  v,
 			}
-			cfg.RCON.TimeoutSeconds = int(p)
-			set("rcon.timeoutSeconds", configulator.LayerEnv, n)
 		}
+		cfg.RCON.TimeoutSeconds = int(p)
+		set("rcon.timeoutSeconds", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rcon", "maxConcurrent"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rcon.maxConcurrent",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rcon", "maxConcurrent"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rcon.maxConcurrent",
+				Source: n,
+				Value:  v,
 			}
-			cfg.RCON.MaxConcurrent = int(p)
-			set("rcon.maxConcurrent", configulator.LayerEnv, n)
 		}
+		cfg.RCON.MaxConcurrent = int(p)
+		set("rcon.maxConcurrent", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "initial"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.initial",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "initial"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.initial",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.Initial = int(p)
-			set("rating.initial", configulator.LayerEnv, n)
 		}
+		cfg.Rating.Initial = int(p)
+		set("rating.initial", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "provisionalK"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.provisionalK",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "provisionalK"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.provisionalK",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.ProvisionalK = int(p)
-			set("rating.provisionalK", configulator.LayerEnv, n)
 		}
+		cfg.Rating.ProvisionalK = int(p)
+		set("rating.provisionalK", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "settlingK"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.settlingK",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "settlingK"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.settlingK",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.SettlingK = int(p)
-			set("rating.settlingK", configulator.LayerEnv, n)
 		}
+		cfg.Rating.SettlingK = int(p)
+		set("rating.settlingK", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "stableK"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.stableK",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "stableK"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.stableK",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.StableK = int(p)
-			set("rating.stableK", configulator.LayerEnv, n)
 		}
+		cfg.Rating.StableK = int(p)
+		set("rating.stableK", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "provisionalGames"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.provisionalGames",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "provisionalGames"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.provisionalGames",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.ProvisionalGames = int(p)
-			set("rating.provisionalGames", configulator.LayerEnv, n)
 		}
+		cfg.Rating.ProvisionalGames = int(p)
+		set("rating.provisionalGames", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "settlingGames"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.settlingGames",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "settlingGames"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.settlingGames",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.SettlingGames = int(p)
-			set("rating.settlingGames", configulator.LayerEnv, n)
 		}
+		cfg.Rating.SettlingGames = int(p)
+		set("rating.settlingGames", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "decayGraceDays"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.decayGraceDays",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "decayGraceDays"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.decayGraceDays",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.DecayGraceDays = int(p)
-			set("rating.decayGraceDays", configulator.LayerEnv, n)
 		}
+		cfg.Rating.DecayGraceDays = int(p)
+		set("rating.decayGraceDays", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "rating", "decayPermillePerDay"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "rating.decayPermillePerDay",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "rating", "decayPermillePerDay"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "rating.decayPermillePerDay",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Rating.DecayPermillePerDay = int(p)
-			set("rating.decayPermillePerDay", configulator.LayerEnv, n)
 		}
+		cfg.Rating.DecayPermillePerDay = int(p)
+		set("rating.decayPermillePerDay", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "bank", "cooldownSeconds"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "bank.cooldownSeconds",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "bank", "cooldownSeconds"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "bank.cooldownSeconds",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Bank.CooldownSeconds = int(p)
-			set("bank.cooldownSeconds", configulator.LayerEnv, n)
 		}
+		cfg.Bank.CooldownSeconds = int(p)
+		set("bank.cooldownSeconds", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "bank", "verifyAttempts"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "bank.verifyAttempts",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "bank", "verifyAttempts"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "bank.verifyAttempts",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Bank.VerifyAttempts = int(p)
-			set("bank.verifyAttempts", configulator.LayerEnv, n)
 		}
+		cfg.Bank.VerifyAttempts = int(p)
+		set("bank.verifyAttempts", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "leaderboard", "intervalSeconds"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "leaderboard.intervalSeconds",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "leaderboard", "intervalSeconds"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "leaderboard.intervalSeconds",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Leaderboard.IntervalSeconds = int(p)
-			set("leaderboard.intervalSeconds", configulator.LayerEnv, n)
 		}
+		cfg.Leaderboard.IntervalSeconds = int(p)
+		set("leaderboard.intervalSeconds", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "leaderboard", "size"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "leaderboard.size",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "leaderboard", "size"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "leaderboard.size",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Leaderboard.Size = int(p)
-			set("leaderboard.size", configulator.LayerEnv, n)
 		}
+		cfg.Leaderboard.Size = int(p)
+		set("leaderboard.size", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "killfeed", "retentionDays"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "killfeed.retentionDays",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "killfeed", "retentionDays"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "killfeed.retentionDays",
+				Source: n,
+				Value:  v,
 			}
-			cfg.KillFeed.RetentionDays = int(p)
-			set("killfeed.retentionDays", configulator.LayerEnv, n)
 		}
+		cfg.KillFeed.RetentionDays = int(p)
+		set("killfeed.retentionDays", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "link", "codeTTLSeconds"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "link.codeTTLSeconds",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "link", "codeTTLSeconds"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "link.codeTTLSeconds",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Link.CodeTTLSeconds = int(p)
-			set("link.codeTTLSeconds", configulator.LayerEnv, n)
 		}
+		cfg.Link.CodeTTLSeconds = int(p)
+		set("link.codeTTLSeconds", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "link", "maxAttempts"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "link.maxAttempts",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "link", "maxAttempts"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "link.maxAttempts",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Link.MaxAttempts = int(p)
-			set("link.maxAttempts", configulator.LayerEnv, n)
 		}
+		cfg.Link.MaxAttempts = int(p)
+		set("link.maxAttempts", configulator.LayerEnv, n)
 	}
-	if n := configulator.EnvName(ec.Opts.Prefix, ec.Opts.Separator, "link", "reissueCooldownSeconds"); true {
-		if v, ok := ec.Getenv(n); ok {
-			p, err := strconv.ParseInt(v, 10, 64)
-			if err != nil {
-				return &configulator.ParseError{
-					Err:    err,
-					Path:   "link.reissueCooldownSeconds",
-					Source: n,
-					Value:  v,
-				}
+	if n, v, ok := impl.LookupEnv(ec.Getenv, ec.Opts.Prefix, ec.Opts.Separator, "link", "reissueCooldownSeconds"); ok {
+		p, err := strconv.ParseInt(v, 10, strconv.IntSize)
+		if err != nil {
+			return &configulator.ParseError{
+				Err:    err,
+				Path:   "link.reissueCooldownSeconds",
+				Source: n,
+				Value:  v,
 			}
-			cfg.Link.ReissueCooldownSeconds = int(p)
-			set("link.reissueCooldownSeconds", configulator.LayerEnv, n)
 		}
+		cfg.Link.ReissueCooldownSeconds = int(p)
+		set("link.reissueCooldownSeconds", configulator.LayerEnv, n)
 	}
 	return nil
 }
@@ -822,10 +767,55 @@ func ConfigPFlagHooks() cpflag.Hooks[Config] {
 		Register: configRegisterPFlags,
 	}
 }
+
 func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
-	names := []string{strings.Join([]string{"logLevel"}, o.Separator), strings.Join([]string{"interactions", "bind"}, o.Separator), strings.Join([]string{"interactions", "port"}, o.Separator), strings.Join([]string{"ingest", "bind"}, o.Separator), strings.Join([]string{"ingest", "port"}, o.Separator), strings.Join([]string{"ingest", "secret"}, o.Separator), strings.Join([]string{"metrics", "enabled"}, o.Separator), strings.Join([]string{"metrics", "port"}, o.Separator), strings.Join([]string{"pprof", "enabled"}, o.Separator), strings.Join([]string{"pprof", "port"}, o.Separator), strings.Join([]string{"database", "url"}, o.Separator), strings.Join([]string{"database", "migrateOnStart"}, o.Separator), strings.Join([]string{"database", "maxConns"}, o.Separator), strings.Join([]string{"discord", "token"}, o.Separator), strings.Join([]string{"discord", "applicationId"}, o.Separator), strings.Join([]string{"discord", "publicKey"}, o.Separator), strings.Join([]string{"rcon", "host"}, o.Separator), strings.Join([]string{"rcon", "port"}, o.Separator), strings.Join([]string{"rcon", "password"}, o.Separator), strings.Join([]string{"rcon", "timeoutSeconds"}, o.Separator), strings.Join([]string{"rcon", "maxConcurrent"}, o.Separator), strings.Join([]string{"rating", "initial"}, o.Separator), strings.Join([]string{"rating", "provisionalK"}, o.Separator), strings.Join([]string{"rating", "settlingK"}, o.Separator), strings.Join([]string{"rating", "stableK"}, o.Separator), strings.Join([]string{"rating", "provisionalGames"}, o.Separator), strings.Join([]string{"rating", "settlingGames"}, o.Separator), strings.Join([]string{"rating", "decayGraceDays"}, o.Separator), strings.Join([]string{"rating", "decayPermillePerDay"}, o.Separator), strings.Join([]string{"bank", "cooldownSeconds"}, o.Separator), strings.Join([]string{"bank", "verifyAttempts"}, o.Separator), strings.Join([]string{"leaderboard", "intervalSeconds"}, o.Separator), strings.Join([]string{"leaderboard", "size"}, o.Separator), strings.Join([]string{"killfeed", "retentionDays"}, o.Separator), strings.Join([]string{"link", "codeTTLSeconds"}, o.Separator), strings.Join([]string{"link", "maxAttempts"}, o.Separator), strings.Join([]string{"link", "reissueCooldownSeconds"}, o.Separator)}
+	names := []string{
+		"logLevel",
+		"interactions" + o.Separator + "bind",
+		"interactions" + o.Separator + "port",
+		"ingest" + o.Separator + "bind",
+		"ingest" + o.Separator + "port",
+		"ingest" + o.Separator + "secret",
+		"metrics" + o.Separator + "enabled",
+		"metrics" + o.Separator + "port",
+		"pprof" + o.Separator + "enabled",
+		"pprof" + o.Separator + "port",
+		"database" + o.Separator + "url",
+		"database" + o.Separator + "migrateOnStart",
+		"database" + o.Separator + "maxConns",
+		"discord" + o.Separator + "token",
+		"discord" + o.Separator + "applicationId",
+		"discord" + o.Separator + "publicKey",
+		"rcon" + o.Separator + "host",
+		"rcon" + o.Separator + "port",
+		"rcon" + o.Separator + "password",
+		"rcon" + o.Separator + "timeoutSeconds",
+		"rcon" + o.Separator + "maxConcurrent",
+		"rating" + o.Separator + "initial",
+		"rating" + o.Separator + "provisionalK",
+		"rating" + o.Separator + "settlingK",
+		"rating" + o.Separator + "stableK",
+		"rating" + o.Separator + "provisionalGames",
+		"rating" + o.Separator + "settlingGames",
+		"rating" + o.Separator + "decayGraceDays",
+		"rating" + o.Separator + "decayPermillePerDay",
+		"bank" + o.Separator + "cooldownSeconds",
+		"bank" + o.Separator + "verifyAttempts",
+		"leaderboard" + o.Separator + "intervalSeconds",
+		"leaderboard" + o.Separator + "size",
+		"killfeed" + o.Separator + "retentionDays",
+		"link" + o.Separator + "codeTTLSeconds",
+		"link" + o.Separator + "maxAttempts",
+		"link" + o.Separator + "reissueCooldownSeconds",
+	}
 	for i, name := range names {
-		if fs.Lookup(name) != nil || slices.Contains(names[:i], name) {
+		if f := fs.Lookup(name); f != nil {
+			return &configulator.FlagConflictError{
+				Existing: f.Name,
+				Flag:     name,
+			}
+		}
+		if slices.Contains(names[:i], name) {
 			return &configulator.FlagConflictError{
 				Existing: name,
 				Flag:     name,
@@ -834,45 +824,46 @@ func configRegisterPFlags(fs *pflag.FlagSet, o *cpflag.Options) error {
 	}
 	fs.String(names[0], "info", "log verbosity: debug, info, warn, or error")
 	fs.String(names[1], "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
-	fs.Int(names[2], 8080, "port the Discord interactions endpoint listens on")
+	fs.Var(impl.NewInt(8080), names[2], "port the Discord interactions endpoint listens on")
 	fs.String(names[3], "", "address to listen on; empty listens on all interfaces over both IPv4 and IPv6")
-	fs.Int(names[4], 8081, "port the game webhook endpoint listens on; must NOT be published to the internet")
+	fs.Var(impl.NewInt(8081), names[4], "port the game webhook endpoint listens on; must NOT be published to the internet")
 	fs.String(names[5], "", "shared secret embedded in the webhook path (required); at least 32 characters, no / ? # or %; generate with openssl rand -hex 32")
 	fs.Bool(names[6], true, "serve Prometheus metrics; the health probes are on the interactions listener and unaffected by this")
-	fs.Int(names[7], 9090, "TCP port for the metrics listener")
+	fs.Var(impl.NewInt(9090), names[7], "TCP port for the metrics listener")
 	fs.Bool(names[8], false, "serve pprof profiling endpoints; /debug/pprof/cmdline prints process arguments, so keep it internal")
-	fs.Int(names[9], 6060, "TCP port for the pprof listener")
+	fs.Var(impl.NewInt(6060), names[9], "TCP port for the pprof listener")
 	fs.String(names[10], "", "connection URL, e.g. postgres://user:pass@host:5432/obsidibot; psql:// and postgresql:// are accepted too")
 	fs.Bool(names[11], true, "apply pending schema migrations on startup")
-	fs.Int(names[12], 16, "maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once")
+	fs.Var(impl.NewInt(16), names[12], "maximum PostgreSQL connections this replica's pool may open; must leave room for the background jobs and request traffic at once")
 	fs.String(names[13], "", "bot token (required), used for the REST calls that post the feed and the board")
 	fs.String(names[14], "", "Discord application ID (required), used to register commands and edit deferred replies")
 	fs.String(names[15], "", "Ed25519 public key of the application as hex (required); every interaction is verified against it")
 	fs.String(names[16], "127.0.0.1", "hostname or IP of the Source RCON server")
-	fs.Int(names[17], 7779, "TCP port of the Source RCON server")
+	fs.Var(impl.NewInt(7779), names[17], "TCP port of the Source RCON server")
 	fs.String(names[18], "", "RCON password (required)")
-	fs.Int(names[19], 10, "deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response")
-	fs.Int(names[20], 4, "maximum RCON commands in flight at once; further callers fail fast rather than queue")
-	fs.Int(names[21], 1200, "rating every player starts at")
-	fs.Int(names[22], 40, "K factor while a player has fewer than provisionalGames rated kills")
-	fs.Int(names[23], 20, "K factor between provisionalGames and settlingGames")
-	fs.Int(names[24], 16, "K factor once a player passes settlingGames")
-	fs.Int(names[25], 20, "rated games before K drops from provisionalK to settlingK")
-	fs.Int(names[26], 50, "rated games before K drops from settlingK to stableK")
-	fs.Int(names[27], 30, "days a player may be idle before decay begins")
-	fs.Int(names[28], 5, "thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial")
-	fs.Int(names[29], 10, "seconds a player must wait between banking operations")
-	fs.Int(names[30], 5, "times to re-read a player's marks trying to confirm an unverified transfer before parking it for review")
-	fs.Int(names[31], 60, "seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed")
-	fs.Int(names[32], 20, "players listed on the leaderboard")
-	fs.Int(names[33], 30, "days to keep the raw webhook payload of a processed kill event; the event itself is kept forever")
-	fs.Int(names[34], 300, "seconds a link code stays valid")
-	fs.Int(names[35], 5, "wrong codes accepted before a challenge is burned")
-	fs.Int(names[36], 30, "seconds before a user may request another link code")
+	fs.Var(impl.NewInt(10), names[19], "deadline in seconds covering a whole RCON exchange: connect, authenticate, command, response")
+	fs.Var(impl.NewInt(4), names[20], "maximum RCON commands in flight at once; further callers fail fast rather than queue")
+	fs.Var(impl.NewInt(1200), names[21], "rating every player starts at")
+	fs.Var(impl.NewInt(40), names[22], "K factor while a player has fewer than provisionalGames rated kills")
+	fs.Var(impl.NewInt(20), names[23], "K factor between provisionalGames and settlingGames")
+	fs.Var(impl.NewInt(16), names[24], "K factor once a player passes settlingGames")
+	fs.Var(impl.NewInt(20), names[25], "rated games before K drops from provisionalK to settlingK")
+	fs.Var(impl.NewInt(50), names[26], "rated games before K drops from settlingK to stableK")
+	fs.Var(impl.NewInt(30), names[27], "days a player may be idle before decay begins")
+	fs.Var(impl.NewInt(5), names[28], "thousandths of the gap to initial that an idle rating decays per day past the grace period; only ever pulls a rating down toward initial")
+	fs.Var(impl.NewInt(10), names[29], "seconds a player must wait between banking operations")
+	fs.Var(impl.NewInt(5), names[30], "times to re-read a player's marks trying to confirm an unverified transfer before parking it for review")
+	fs.Var(impl.NewInt(60), names[31], "seconds between leaderboard message refreshes; the board and the feed share a channel rate limit, so a shorter tick starves the feed")
+	fs.Var(impl.NewInt(20), names[32], "players listed on the leaderboard")
+	fs.Var(impl.NewInt(30), names[33], "days to keep the raw webhook payload of a processed kill event; the event itself is kept forever")
+	fs.Var(impl.NewInt(300), names[34], "seconds a link code stays valid")
+	fs.Var(impl.NewInt(5), names[35], "wrong codes accepted before a challenge is burned")
+	fs.Var(impl.NewInt(30), names[36], "seconds before a user may request another link code")
 	return nil
 }
-func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep string, set configulator.SetOrigin) error {
-	if n := strings.Join([]string{"logLevel"}, o.Separator); fs.Changed(n) {
+
+func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, _ string, set configulator.SetOrigin) error {
+	if n := "logLevel"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -884,7 +875,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.LogLevel = LogLevel(v)
 		set("logLevel", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"interactions", "bind"}, o.Separator); fs.Changed(n) {
+	if n := "interactions" + o.Separator + "bind"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -896,7 +887,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Interactions.Bind = v
 		set("interactions.bind", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"interactions", "port"}, o.Separator); fs.Changed(n) {
+	if n := "interactions" + o.Separator + "port"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -908,7 +899,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Interactions.Port = v
 		set("interactions.port", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"ingest", "bind"}, o.Separator); fs.Changed(n) {
+	if n := "ingest" + o.Separator + "bind"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -920,7 +911,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Ingest.Bind = v
 		set("ingest.bind", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"ingest", "port"}, o.Separator); fs.Changed(n) {
+	if n := "ingest" + o.Separator + "port"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -932,7 +923,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Ingest.Port = v
 		set("ingest.port", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"ingest", "secret"}, o.Separator); fs.Changed(n) {
+	if n := "ingest" + o.Separator + "secret"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -944,7 +935,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Ingest.Secret = v
 		set("ingest.secret", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"metrics", "enabled"}, o.Separator); fs.Changed(n) {
+	if n := "metrics" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -956,7 +947,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Metrics.Enabled = v
 		set("metrics.enabled", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"metrics", "port"}, o.Separator); fs.Changed(n) {
+	if n := "metrics" + o.Separator + "port"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -968,7 +959,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Metrics.Port = v
 		set("metrics.port", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"pprof", "enabled"}, o.Separator); fs.Changed(n) {
+	if n := "pprof" + o.Separator + "enabled"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -980,7 +971,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.PProf.Enabled = v
 		set("pprof.enabled", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"pprof", "port"}, o.Separator); fs.Changed(n) {
+	if n := "pprof" + o.Separator + "port"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -992,7 +983,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.PProf.Port = v
 		set("pprof.port", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"database", "url"}, o.Separator); fs.Changed(n) {
+	if n := "database" + o.Separator + "url"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1004,7 +995,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Database.URL = v
 		set("database.url", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"database", "migrateOnStart"}, o.Separator); fs.Changed(n) {
+	if n := "database" + o.Separator + "migrateOnStart"; fs.Changed(n) {
 		v, err := fs.GetBool(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1016,7 +1007,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Database.MigrateOnStart = v
 		set("database.migrateOnStart", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"database", "maxConns"}, o.Separator); fs.Changed(n) {
+	if n := "database" + o.Separator + "maxConns"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1028,7 +1019,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Database.MaxConns = v
 		set("database.maxConns", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"discord", "token"}, o.Separator); fs.Changed(n) {
+	if n := "discord" + o.Separator + "token"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1040,7 +1031,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Discord.Token = v
 		set("discord.token", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"discord", "applicationId"}, o.Separator); fs.Changed(n) {
+	if n := "discord" + o.Separator + "applicationId"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1052,7 +1043,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Discord.ApplicationID = v
 		set("discord.applicationId", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"discord", "publicKey"}, o.Separator); fs.Changed(n) {
+	if n := "discord" + o.Separator + "publicKey"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1064,7 +1055,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Discord.PublicKey = v
 		set("discord.publicKey", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rcon", "host"}, o.Separator); fs.Changed(n) {
+	if n := "rcon" + o.Separator + "host"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1076,7 +1067,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.RCON.Host = v
 		set("rcon.host", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rcon", "port"}, o.Separator); fs.Changed(n) {
+	if n := "rcon" + o.Separator + "port"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1088,7 +1079,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.RCON.Port = v
 		set("rcon.port", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rcon", "password"}, o.Separator); fs.Changed(n) {
+	if n := "rcon" + o.Separator + "password"; fs.Changed(n) {
 		v, err := fs.GetString(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1100,7 +1091,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.RCON.Password = v
 		set("rcon.password", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rcon", "timeoutSeconds"}, o.Separator); fs.Changed(n) {
+	if n := "rcon" + o.Separator + "timeoutSeconds"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1112,7 +1103,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.RCON.TimeoutSeconds = v
 		set("rcon.timeoutSeconds", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rcon", "maxConcurrent"}, o.Separator); fs.Changed(n) {
+	if n := "rcon" + o.Separator + "maxConcurrent"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1124,7 +1115,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.RCON.MaxConcurrent = v
 		set("rcon.maxConcurrent", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "initial"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "initial"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1136,7 +1127,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.Initial = v
 		set("rating.initial", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "provisionalK"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "provisionalK"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1148,7 +1139,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.ProvisionalK = v
 		set("rating.provisionalK", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "settlingK"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "settlingK"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1160,7 +1151,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.SettlingK = v
 		set("rating.settlingK", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "stableK"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "stableK"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1172,7 +1163,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.StableK = v
 		set("rating.stableK", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "provisionalGames"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "provisionalGames"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1184,7 +1175,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.ProvisionalGames = v
 		set("rating.provisionalGames", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "settlingGames"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "settlingGames"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1196,7 +1187,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.SettlingGames = v
 		set("rating.settlingGames", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "decayGraceDays"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "decayGraceDays"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1208,7 +1199,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.DecayGraceDays = v
 		set("rating.decayGraceDays", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"rating", "decayPermillePerDay"}, o.Separator); fs.Changed(n) {
+	if n := "rating" + o.Separator + "decayPermillePerDay"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1220,7 +1211,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Rating.DecayPermillePerDay = v
 		set("rating.decayPermillePerDay", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"bank", "cooldownSeconds"}, o.Separator); fs.Changed(n) {
+	if n := "bank" + o.Separator + "cooldownSeconds"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1232,7 +1223,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Bank.CooldownSeconds = v
 		set("bank.cooldownSeconds", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"bank", "verifyAttempts"}, o.Separator); fs.Changed(n) {
+	if n := "bank" + o.Separator + "verifyAttempts"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1244,7 +1235,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Bank.VerifyAttempts = v
 		set("bank.verifyAttempts", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"leaderboard", "intervalSeconds"}, o.Separator); fs.Changed(n) {
+	if n := "leaderboard" + o.Separator + "intervalSeconds"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1256,7 +1247,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Leaderboard.IntervalSeconds = v
 		set("leaderboard.intervalSeconds", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"leaderboard", "size"}, o.Separator); fs.Changed(n) {
+	if n := "leaderboard" + o.Separator + "size"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1268,7 +1259,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Leaderboard.Size = v
 		set("leaderboard.size", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"killfeed", "retentionDays"}, o.Separator); fs.Changed(n) {
+	if n := "killfeed" + o.Separator + "retentionDays"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1280,7 +1271,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.KillFeed.RetentionDays = v
 		set("killfeed.retentionDays", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"link", "codeTTLSeconds"}, o.Separator); fs.Changed(n) {
+	if n := "link" + o.Separator + "codeTTLSeconds"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1292,7 +1283,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Link.CodeTTLSeconds = v
 		set("link.codeTTLSeconds", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"link", "maxAttempts"}, o.Separator); fs.Changed(n) {
+	if n := "link" + o.Separator + "maxAttempts"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1304,7 +1295,7 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 		cfg.Link.MaxAttempts = v
 		set("link.maxAttempts", configulator.LayerCLI, "--"+n)
 	}
-	if n := strings.Join([]string{"link", "reissueCooldownSeconds"}, o.Separator); fs.Changed(n) {
+	if n := "link" + o.Separator + "reissueCooldownSeconds"; fs.Changed(n) {
 		v, err := fs.GetInt(n)
 		if err != nil {
 			return &configulator.ParseError{
@@ -1318,217 +1309,302 @@ func configApplyPFlags(cfg *Config, fs *pflag.FlagSet, o *cpflag.Options, sep st
 	}
 	return nil
 }
+
 func (s *configShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	tok, err := dec.ReadToken()
 	if err != nil {
 		return err
 	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
+	if tok.Kind() != jsontext.KindBeginObject {
+		return fmt.Errorf("expected an object, got %v", tok.Kind())
 	}
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "logLevel":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.LogLevel = &str
 			default:
-				return fmt.Errorf("logLevel: expected a string, got %v", v.Kind())
+				return configJSONError("logLevel", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "interactions":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("interactions", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub interactionsShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "interactions"); err != nil {
 					return err
 				}
 				s.Interactions = &sub
 			}
 		case "ingest":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("ingest", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub ingestShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "ingest"); err != nil {
 					return err
 				}
 				s.Ingest = &sub
 			}
 		case "metrics":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("metrics", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub metricsShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "metrics"); err != nil {
 					return err
 				}
 				s.Metrics = &sub
 			}
 		case "pprof":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("pprof", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub pProfShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "pprof"); err != nil {
 					return err
 				}
 				s.PProf = &sub
 			}
 		case "database":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("database", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub databaseShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "database"); err != nil {
 					return err
 				}
 				s.Database = &sub
 			}
 		case "discord":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("discord", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub discordShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "discord"); err != nil {
 					return err
 				}
 				s.Discord = &sub
 			}
 		case "rcon":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("rcon", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub rCONShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "rcon"); err != nil {
 					return err
 				}
 				s.RCON = &sub
 			}
 		case "rating":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("rating", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub ratingShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "rating"); err != nil {
 					return err
 				}
 				s.Rating = &sub
 			}
 		case "bank":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("bank", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub bankShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "bank"); err != nil {
 					return err
 				}
 				s.Bank = &sub
 			}
 		case "leaderboard":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("leaderboard", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub leaderboardShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "leaderboard"); err != nil {
 					return err
 				}
 				s.Leaderboard = &sub
 			}
 		case "killfeed":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("killfeed", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub killFeedShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "killfeed"); err != nil {
 					return err
 				}
 				s.KillFeed = &sub
 			}
 		case "link":
-			if dec.PeekKind() == 'n' {
+			if dec.PeekKind() == jsontext.KindNull {
 				if _, err := dec.ReadToken(); err != nil {
 					return err
 				}
 			} else {
+				open, err := dec.ReadToken()
+				if err != nil {
+					return err
+				}
+				if open.Kind() != jsontext.KindBeginObject {
+					return configJSONError("link", open, fmt.Errorf("expected an object, got %v", open.Kind()))
+				}
 				var sub linkShadow
-				if err := sub.UnmarshalJSONFrom(dec); err != nil {
+				if err := sub.decodeJSON(dec, "link"); err != nil {
 					return err
 				}
 				s.Link = &sub
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*configShadow)(nil)
+var _ json.UnmarshalerFrom = (*configShadow)(nil)
 
-func (s *interactionsShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *interactionsShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "bind":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Bind = &str
 			default:
-				return fmt.Errorf("bind: expected a string, got %v", v.Kind())
+				return configJSONError(path+".bind", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "port":
 			v, err := dec.ReadToken()
@@ -1536,54 +1612,55 @@ func (s *interactionsShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".port", v, err)
 				}
-				val := int(num)
-				s.Port = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".port", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Port = &num
 			default:
-				return fmt.Errorf("port: expected a number, got %v", v.Kind())
+				return configJSONError(path+".port", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*interactionsShadow)(nil)
-
-func (s *ingestShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *ingestShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "bind":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Bind = &str
 			default:
-				return fmt.Errorf("bind: expected a string, got %v", v.Kind())
+				return configJSONError(path+".bind", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "port":
 			v, err := dec.ReadToken()
@@ -1591,16 +1668,19 @@ func (s *ingestShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".port", v, err)
 				}
-				val := int(num)
-				s.Port = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".port", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Port = &num
 			default:
-				return fmt.Errorf("port: expected a number, got %v", v.Kind())
+				return configJSONError(path+".port", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "secret":
 			v, err := dec.ReadToken()
@@ -1608,50 +1688,48 @@ func (s *ingestShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Secret = &str
 			default:
-				return fmt.Errorf("secret: expected a string, got %v", v.Kind())
+				return configJSONError(path+".secret", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*ingestShadow)(nil)
-
-func (s *metricsShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *metricsShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "enabled":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case 't', 'f':
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
 				b := v.Bool()
 				s.Enabled = &b
 			default:
-				return fmt.Errorf("enabled: expected a bool, got %v", v.Kind())
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		case "port":
 			v, err := dec.ReadToken()
@@ -1659,54 +1737,55 @@ func (s *metricsShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".port", v, err)
 				}
-				val := int(num)
-				s.Port = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".port", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Port = &num
 			default:
-				return fmt.Errorf("port: expected a number, got %v", v.Kind())
+				return configJSONError(path+".port", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*metricsShadow)(nil)
-
-func (s *pProfShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *pProfShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "enabled":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case 't', 'f':
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
 				b := v.Bool()
 				s.Enabled = &b
 			default:
-				return fmt.Errorf("enabled: expected a bool, got %v", v.Kind())
+				return configJSONError(path+".enabled", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		case "port":
 			v, err := dec.ReadToken()
@@ -1714,54 +1793,55 @@ func (s *pProfShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".port", v, err)
 				}
-				val := int(num)
-				s.Port = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".port", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Port = &num
 			default:
-				return fmt.Errorf("port: expected a number, got %v", v.Kind())
+				return configJSONError(path+".port", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*pProfShadow)(nil)
-
-func (s *databaseShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *databaseShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "url":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.URL = &str
 			default:
-				return fmt.Errorf("url: expected a string, got %v", v.Kind())
+				return configJSONError(path+".url", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "migrateOnStart":
 			v, err := dec.ReadToken()
@@ -1769,12 +1849,12 @@ func (s *databaseShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case 't', 'f':
+			case jsontext.KindNull:
+			case jsontext.KindTrue, jsontext.KindFalse:
 				b := v.Bool()
 				s.MigrateOnStart = &b
 			default:
-				return fmt.Errorf("migrateOnStart: expected a bool, got %v", v.Kind())
+				return configJSONError(path+".migrateOnStart", v, fmt.Errorf("expected a bool, got %v", v.Kind()))
 			}
 		case "maxConns":
 			v, err := dec.ReadToken()
@@ -1782,54 +1862,55 @@ func (s *databaseShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".maxConns", v, err)
 				}
-				val := int(num)
-				s.MaxConns = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".maxConns", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.MaxConns = &num
 			default:
-				return fmt.Errorf("maxConns: expected a number, got %v", v.Kind())
+				return configJSONError(path+".maxConns", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*databaseShadow)(nil)
-
-func (s *discordShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *discordShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "token":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Token = &str
 			default:
-				return fmt.Errorf("token: expected a string, got %v", v.Kind())
+				return configJSONError(path+".token", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "applicationId":
 			v, err := dec.ReadToken()
@@ -1837,12 +1918,12 @@ func (s *discordShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.ApplicationID = &str
 			default:
-				return fmt.Errorf("applicationId: expected a string, got %v", v.Kind())
+				return configJSONError(path+".applicationId", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "publicKey":
 			v, err := dec.ReadToken()
@@ -1850,50 +1931,48 @@ func (s *discordShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.PublicKey = &str
 			default:
-				return fmt.Errorf("publicKey: expected a string, got %v", v.Kind())
+				return configJSONError(path+".publicKey", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*discordShadow)(nil)
-
-func (s *rCONShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *rCONShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "host":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Host = &str
 			default:
-				return fmt.Errorf("host: expected a string, got %v", v.Kind())
+				return configJSONError(path+".host", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "port":
 			v, err := dec.ReadToken()
@@ -1901,16 +1980,19 @@ func (s *rCONShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".port", v, err)
 				}
-				val := int(num)
-				s.Port = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".port", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Port = &num
 			default:
-				return fmt.Errorf("port: expected a number, got %v", v.Kind())
+				return configJSONError(path+".port", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "password":
 			v, err := dec.ReadToken()
@@ -1918,12 +2000,12 @@ func (s *rCONShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '"':
+			case jsontext.KindNull:
+			case jsontext.KindString:
 				str := v.String()
 				s.Password = &str
 			default:
-				return fmt.Errorf("password: expected a string, got %v", v.Kind())
+				return configJSONError(path+".password", v, fmt.Errorf("expected a string, got %v", v.Kind()))
 			}
 		case "timeoutSeconds":
 			v, err := dec.ReadToken()
@@ -1931,16 +2013,19 @@ func (s *rCONShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".timeoutSeconds", v, err)
 				}
-				val := int(num)
-				s.TimeoutSeconds = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".timeoutSeconds", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.TimeoutSeconds = &num
 			default:
-				return fmt.Errorf("timeoutSeconds: expected a number, got %v", v.Kind())
+				return configJSONError(path+".timeoutSeconds", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "maxConcurrent":
 			v, err := dec.ReadToken()
@@ -1948,58 +2033,62 @@ func (s *rCONShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".maxConcurrent", v, err)
 				}
-				val := int(num)
-				s.MaxConcurrent = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".maxConcurrent", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.MaxConcurrent = &num
 			default:
-				return fmt.Errorf("maxConcurrent: expected a number, got %v", v.Kind())
+				return configJSONError(path+".maxConcurrent", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*rCONShadow)(nil)
-
-func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *ratingShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "initial":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".initial", v, err)
 				}
-				val := int(num)
-				s.Initial = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".initial", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Initial = &num
 			default:
-				return fmt.Errorf("initial: expected a number, got %v", v.Kind())
+				return configJSONError(path+".initial", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "provisionalK":
 			v, err := dec.ReadToken()
@@ -2007,16 +2096,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".provisionalK", v, err)
 				}
-				val := int(num)
-				s.ProvisionalK = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".provisionalK", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.ProvisionalK = &num
 			default:
-				return fmt.Errorf("provisionalK: expected a number, got %v", v.Kind())
+				return configJSONError(path+".provisionalK", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "settlingK":
 			v, err := dec.ReadToken()
@@ -2024,16 +2116,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".settlingK", v, err)
 				}
-				val := int(num)
-				s.SettlingK = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".settlingK", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.SettlingK = &num
 			default:
-				return fmt.Errorf("settlingK: expected a number, got %v", v.Kind())
+				return configJSONError(path+".settlingK", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "stableK":
 			v, err := dec.ReadToken()
@@ -2041,16 +2136,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".stableK", v, err)
 				}
-				val := int(num)
-				s.StableK = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".stableK", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.StableK = &num
 			default:
-				return fmt.Errorf("stableK: expected a number, got %v", v.Kind())
+				return configJSONError(path+".stableK", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "provisionalGames":
 			v, err := dec.ReadToken()
@@ -2058,16 +2156,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".provisionalGames", v, err)
 				}
-				val := int(num)
-				s.ProvisionalGames = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".provisionalGames", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.ProvisionalGames = &num
 			default:
-				return fmt.Errorf("provisionalGames: expected a number, got %v", v.Kind())
+				return configJSONError(path+".provisionalGames", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "settlingGames":
 			v, err := dec.ReadToken()
@@ -2075,16 +2176,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".settlingGames", v, err)
 				}
-				val := int(num)
-				s.SettlingGames = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".settlingGames", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.SettlingGames = &num
 			default:
-				return fmt.Errorf("settlingGames: expected a number, got %v", v.Kind())
+				return configJSONError(path+".settlingGames", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "decayGraceDays":
 			v, err := dec.ReadToken()
@@ -2092,16 +2196,19 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".decayGraceDays", v, err)
 				}
-				val := int(num)
-				s.DecayGraceDays = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".decayGraceDays", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.DecayGraceDays = &num
 			default:
-				return fmt.Errorf("decayGraceDays: expected a number, got %v", v.Kind())
+				return configJSONError(path+".decayGraceDays", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "decayPermillePerDay":
 			v, err := dec.ReadToken()
@@ -2109,58 +2216,62 @@ func (s *ratingShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".decayPermillePerDay", v, err)
 				}
-				val := int(num)
-				s.DecayPermillePerDay = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".decayPermillePerDay", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.DecayPermillePerDay = &num
 			default:
-				return fmt.Errorf("decayPermillePerDay: expected a number, got %v", v.Kind())
+				return configJSONError(path+".decayPermillePerDay", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*ratingShadow)(nil)
-
-func (s *bankShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *bankShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "cooldownSeconds":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".cooldownSeconds", v, err)
 				}
-				val := int(num)
-				s.CooldownSeconds = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".cooldownSeconds", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.CooldownSeconds = &num
 			default:
-				return fmt.Errorf("cooldownSeconds: expected a number, got %v", v.Kind())
+				return configJSONError(path+".cooldownSeconds", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "verifyAttempts":
 			v, err := dec.ReadToken()
@@ -2168,58 +2279,62 @@ func (s *bankShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".verifyAttempts", v, err)
 				}
-				val := int(num)
-				s.VerifyAttempts = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".verifyAttempts", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.VerifyAttempts = &num
 			default:
-				return fmt.Errorf("verifyAttempts: expected a number, got %v", v.Kind())
+				return configJSONError(path+".verifyAttempts", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*bankShadow)(nil)
-
-func (s *leaderboardShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *leaderboardShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "intervalSeconds":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".intervalSeconds", v, err)
 				}
-				val := int(num)
-				s.IntervalSeconds = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".intervalSeconds", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.IntervalSeconds = &num
 			default:
-				return fmt.Errorf("intervalSeconds: expected a number, got %v", v.Kind())
+				return configJSONError(path+".intervalSeconds", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "size":
 			v, err := dec.ReadToken()
@@ -2227,100 +2342,105 @@ func (s *leaderboardShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".size", v, err)
 				}
-				val := int(num)
-				s.Size = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".size", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.Size = &num
 			default:
-				return fmt.Errorf("size: expected a number, got %v", v.Kind())
+				return configJSONError(path+".size", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*leaderboardShadow)(nil)
-
-func (s *killFeedShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *killFeedShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "retentionDays":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".retentionDays", v, err)
 				}
-				val := int(num)
-				s.RetentionDays = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".retentionDays", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.RetentionDays = &num
 			default:
-				return fmt.Errorf("retentionDays: expected a number, got %v", v.Kind())
+				return configJSONError(path+".retentionDays", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*killFeedShadow)(nil)
-
-func (s *linkShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
-	tok, err := dec.ReadToken()
-	if err != nil {
-		return err
-	}
-	if tok.Kind() != '{' {
-		return fmt.Errorf("expected object, got %v", tok.Kind())
-	}
+// decodeJSON decodes the members of an object whose opening brace has
+// been read. path is the object's dotted path.
+func (s *linkShadow) decodeJSON(dec *jsontext.Decoder, path string) error {
 	for {
 		tok, err := dec.ReadToken()
 		if err != nil {
 			return err
 		}
-		if tok.Kind() == '}' {
+		if tok.Kind() == jsontext.KindEndObject {
 			return nil
 		}
-		switch tok.String() {
+		switch key := tok.String(); key {
 		case "codeTTLSeconds":
 			v, err := dec.ReadToken()
 			if err != nil {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".codeTTLSeconds", v, err)
 				}
-				val := int(num)
-				s.CodeTTLSeconds = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".codeTTLSeconds", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.CodeTTLSeconds = &num
 			default:
-				return fmt.Errorf("codeTTLSeconds: expected a number, got %v", v.Kind())
+				return configJSONError(path+".codeTTLSeconds", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "maxAttempts":
 			v, err := dec.ReadToken()
@@ -2328,16 +2448,19 @@ func (s *linkShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".maxAttempts", v, err)
 				}
-				val := int(num)
-				s.MaxAttempts = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".maxAttempts", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.MaxAttempts = &num
 			default:
-				return fmt.Errorf("maxAttempts: expected a number, got %v", v.Kind())
+				return configJSONError(path+".maxAttempts", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		case "reissueCooldownSeconds":
 			v, err := dec.ReadToken()
@@ -2345,66 +2468,88 @@ func (s *linkShadow) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 				return err
 			}
 			switch v.Kind() {
-			case 'n':
-			case '0':
-				num, err := v.Int()
+			case jsontext.KindNull:
+			case jsontext.KindNumber:
+				raw, err := v.Int()
 				if err != nil {
-					return err
+					return configJSONError(path+".reissueCooldownSeconds", v, err)
 				}
-				val := int(num)
-				s.ReissueCooldownSeconds = &val
+				if raw < math.MinInt || raw > math.MaxInt {
+					return configJSONError(path+".reissueCooldownSeconds", v, fmt.Errorf("%d overflows int", raw))
+				}
+				num := int(raw)
+				s.ReissueCooldownSeconds = &num
 			default:
-				return fmt.Errorf("reissueCooldownSeconds: expected a number, got %v", v.Kind())
+				return configJSONError(path+".reissueCooldownSeconds", v, fmt.Errorf("expected a number, got %v", v.Kind()))
 			}
 		default:
-			return fmt.Errorf("unknown key %q", tok.String())
+			if reject, _ := json.GetOption(dec.Options(), json.RejectUnknownMembers); reject {
+				return &configulator.UnknownKeyError{Path: path + "." + configQuoteKey(key)}
+			}
+			if err := dec.SkipValue(); err != nil {
+				return err
+			}
 		}
 	}
 }
 
-var _ v2.UnmarshalerFrom = (*linkShadow)(nil)
+// configJSONError returns a ParseError for the JSON token v at path.
+func configJSONError(path string, v jsontext.Token, err error) error {
+	return &configulator.ParseError{
+		Err:   err,
+		Path:  path,
+		Value: v.String(),
+	}
+}
 
 // PrintConfig renders every field as "path = value" lines, redacting
 // fields tagged secret:"true". The origin Report holds no values,
 // so this is the only place redaction happens.
-func (c *Config) PrintConfig() string {
+func (c Config) PrintConfig() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("logLevel = %v\n", c.LogLevel))
-	b.WriteString(fmt.Sprintf("interactions.bind = %v\n", c.Interactions.Bind))
-	b.WriteString(fmt.Sprintf("interactions.port = %v\n", c.Interactions.Port))
-	b.WriteString(fmt.Sprintf("ingest.bind = %v\n", c.Ingest.Bind))
-	b.WriteString(fmt.Sprintf("ingest.port = %v\n", c.Ingest.Port))
-	b.WriteString(fmt.Sprintf("ingest.secret = %v\n", c.Ingest.Secret))
-	b.WriteString(fmt.Sprintf("metrics.enabled = %v\n", c.Metrics.Enabled))
-	b.WriteString(fmt.Sprintf("metrics.port = %v\n", c.Metrics.Port))
-	b.WriteString(fmt.Sprintf("pprof.enabled = %v\n", c.PProf.Enabled))
-	b.WriteString(fmt.Sprintf("pprof.port = %v\n", c.PProf.Port))
-	b.WriteString(fmt.Sprintf("database.url = %v\n", c.Database.URL))
-	b.WriteString(fmt.Sprintf("database.migrateOnStart = %v\n", c.Database.MigrateOnStart))
-	b.WriteString(fmt.Sprintf("database.maxConns = %v\n", c.Database.MaxConns))
-	b.WriteString(fmt.Sprintf("discord.token = %v\n", c.Discord.Token))
-	b.WriteString(fmt.Sprintf("discord.applicationId = %v\n", c.Discord.ApplicationID))
-	b.WriteString(fmt.Sprintf("discord.publicKey = %v\n", c.Discord.PublicKey))
-	b.WriteString(fmt.Sprintf("rcon.host = %v\n", c.RCON.Host))
-	b.WriteString(fmt.Sprintf("rcon.port = %v\n", c.RCON.Port))
-	b.WriteString(fmt.Sprintf("rcon.password = %v\n", c.RCON.Password))
-	b.WriteString(fmt.Sprintf("rcon.timeoutSeconds = %v\n", c.RCON.TimeoutSeconds))
-	b.WriteString(fmt.Sprintf("rcon.maxConcurrent = %v\n", c.RCON.MaxConcurrent))
-	b.WriteString(fmt.Sprintf("rating.initial = %v\n", c.Rating.Initial))
-	b.WriteString(fmt.Sprintf("rating.provisionalK = %v\n", c.Rating.ProvisionalK))
-	b.WriteString(fmt.Sprintf("rating.settlingK = %v\n", c.Rating.SettlingK))
-	b.WriteString(fmt.Sprintf("rating.stableK = %v\n", c.Rating.StableK))
-	b.WriteString(fmt.Sprintf("rating.provisionalGames = %v\n", c.Rating.ProvisionalGames))
-	b.WriteString(fmt.Sprintf("rating.settlingGames = %v\n", c.Rating.SettlingGames))
-	b.WriteString(fmt.Sprintf("rating.decayGraceDays = %v\n", c.Rating.DecayGraceDays))
-	b.WriteString(fmt.Sprintf("rating.decayPermillePerDay = %v\n", c.Rating.DecayPermillePerDay))
-	b.WriteString(fmt.Sprintf("bank.cooldownSeconds = %v\n", c.Bank.CooldownSeconds))
-	b.WriteString(fmt.Sprintf("bank.verifyAttempts = %v\n", c.Bank.VerifyAttempts))
-	b.WriteString(fmt.Sprintf("leaderboard.intervalSeconds = %v\n", c.Leaderboard.IntervalSeconds))
-	b.WriteString(fmt.Sprintf("leaderboard.size = %v\n", c.Leaderboard.Size))
-	b.WriteString(fmt.Sprintf("killfeed.retentionDays = %v\n", c.KillFeed.RetentionDays))
-	b.WriteString(fmt.Sprintf("link.codeTTLSeconds = %v\n", c.Link.CodeTTLSeconds))
-	b.WriteString(fmt.Sprintf("link.maxAttempts = %v\n", c.Link.MaxAttempts))
-	b.WriteString(fmt.Sprintf("link.reissueCooldownSeconds = %v\n", c.Link.ReissueCooldownSeconds))
+	fmt.Fprintf(&b, "logLevel = %v\n", c.LogLevel)
+	fmt.Fprintf(&b, "interactions.bind = %v\n", c.Interactions.Bind)
+	fmt.Fprintf(&b, "interactions.port = %v\n", c.Interactions.Port)
+	fmt.Fprintf(&b, "ingest.bind = %v\n", c.Ingest.Bind)
+	fmt.Fprintf(&b, "ingest.port = %v\n", c.Ingest.Port)
+	fmt.Fprintf(&b, "ingest.secret = %v\n", c.Ingest.Secret)
+	fmt.Fprintf(&b, "metrics.enabled = %v\n", c.Metrics.Enabled)
+	fmt.Fprintf(&b, "metrics.port = %v\n", c.Metrics.Port)
+	fmt.Fprintf(&b, "pprof.enabled = %v\n", c.PProf.Enabled)
+	fmt.Fprintf(&b, "pprof.port = %v\n", c.PProf.Port)
+	fmt.Fprintf(&b, "database.url = %v\n", c.Database.URL)
+	fmt.Fprintf(&b, "database.migrateOnStart = %v\n", c.Database.MigrateOnStart)
+	fmt.Fprintf(&b, "database.maxConns = %v\n", c.Database.MaxConns)
+	fmt.Fprintf(&b, "discord.token = %v\n", c.Discord.Token)
+	fmt.Fprintf(&b, "discord.applicationId = %v\n", c.Discord.ApplicationID)
+	fmt.Fprintf(&b, "discord.publicKey = %v\n", c.Discord.PublicKey)
+	fmt.Fprintf(&b, "rcon.host = %v\n", c.RCON.Host)
+	fmt.Fprintf(&b, "rcon.port = %v\n", c.RCON.Port)
+	fmt.Fprintf(&b, "rcon.password = %v\n", c.RCON.Password)
+	fmt.Fprintf(&b, "rcon.timeoutSeconds = %v\n", c.RCON.TimeoutSeconds)
+	fmt.Fprintf(&b, "rcon.maxConcurrent = %v\n", c.RCON.MaxConcurrent)
+	fmt.Fprintf(&b, "rating.initial = %v\n", c.Rating.Initial)
+	fmt.Fprintf(&b, "rating.provisionalK = %v\n", c.Rating.ProvisionalK)
+	fmt.Fprintf(&b, "rating.settlingK = %v\n", c.Rating.SettlingK)
+	fmt.Fprintf(&b, "rating.stableK = %v\n", c.Rating.StableK)
+	fmt.Fprintf(&b, "rating.provisionalGames = %v\n", c.Rating.ProvisionalGames)
+	fmt.Fprintf(&b, "rating.settlingGames = %v\n", c.Rating.SettlingGames)
+	fmt.Fprintf(&b, "rating.decayGraceDays = %v\n", c.Rating.DecayGraceDays)
+	fmt.Fprintf(&b, "rating.decayPermillePerDay = %v\n", c.Rating.DecayPermillePerDay)
+	fmt.Fprintf(&b, "bank.cooldownSeconds = %v\n", c.Bank.CooldownSeconds)
+	fmt.Fprintf(&b, "bank.verifyAttempts = %v\n", c.Bank.VerifyAttempts)
+	fmt.Fprintf(&b, "leaderboard.intervalSeconds = %v\n", c.Leaderboard.IntervalSeconds)
+	fmt.Fprintf(&b, "leaderboard.size = %v\n", c.Leaderboard.Size)
+	fmt.Fprintf(&b, "killfeed.retentionDays = %v\n", c.KillFeed.RetentionDays)
+	fmt.Fprintf(&b, "link.codeTTLSeconds = %v\n", c.Link.CodeTTLSeconds)
+	fmt.Fprintf(&b, "link.maxAttempts = %v\n", c.Link.MaxAttempts)
+	fmt.Fprintf(&b, "link.reissueCooldownSeconds = %v\n", c.Link.ReissueCooldownSeconds)
 	return b.String()
+}
+
+func configQuoteKey(k string) string {
+	if strings.ContainsAny(k, ".[") {
+		return "\"" + strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(k) + "\""
+	}
+	return k
 }
