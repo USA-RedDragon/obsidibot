@@ -2,11 +2,8 @@
 // a bad deployment from starting.
 //
 // Field tags are camelCase, matching the RCON block this project inherited from
-// rcon-web. Ports and interval-style values are plain ints rather than sized
-// types or time.Duration: configulator assigns YAML numbers through reflection
-// without a range check, so a narrower field would silently wrap 70000 to 4464
-// and -1 to 65535 where an int lets Validate reject both, and it parses integer
-// fields with strconv, so a "5s" default would not load.
+// rcon-web. Ports and interval-style values are plain ints in whole seconds,
+// and Validate checks their ranges.
 package config
 
 //go:generate go tool configulator -type Config
