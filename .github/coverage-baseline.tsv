@@ -1,7 +1,7 @@
 embedded.go	5	0
 internal/bank/bank.go	143	114
 internal/bank/reconciler.go	101	74
-internal/board/board.go	59	49
+internal/board/board.go	59	50
 internal/cmd/root.go	117	88
 internal/commands/bank.go	72	62
 internal/commands/config.go	52	3
@@ -40,7 +40,7 @@ internal/metrics/goruntime.go	27	22
 internal/metrics/metrics.go	9	9
 internal/metrics/process.go	49	42
 internal/moderation/duration.go	29	29
-internal/moderation/embeds.go	70	50
+internal/moderation/embeds.go	70	51
 internal/moderation/scheduler.go	127	85
 internal/numfmt/numfmt.go	12	12
 internal/pot/client.go	122	109
